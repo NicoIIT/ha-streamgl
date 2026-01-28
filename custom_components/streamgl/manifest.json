@@ -1,0 +1,21 @@
+{
+  "domain": "streamgl",
+  "name": "StreaMGL: Stream, Motion and Gallery",
+  "codeowners": [
+    "@NicoIIT"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "http",
+    "lovelace",
+    "webrtc"
+  ],
+  "documentation": "https://github.com/NicoIIT/ha-streamgl",
+  "integration_type": "device",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/NicoIIT/ha-streamgl/issues",
+  "requirements": [
+    "av"
+  ],
+  "version": "0.0.0"
+}

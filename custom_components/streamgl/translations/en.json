@@ -1,0 +1,100 @@
+{
+    "title": "Stream, Motion and Gallery",
+    "config": {
+        "step": {
+            "abort_or_back": {
+                "description": "The flow cannot continue: {desc}",
+                "menu_options": {
+                    "abort": "Abort the flow",
+                    "back": "Go back"
+                }
+            },
+            "user": {
+                "description": "Before starting, be sure you read the [prerequisite]()!",
+                "menu_options": {
+                    "add_rtsp": "Add StreaMGL from RTSP TCP",
+                    "new_go2rtc": "Add StreaMGL via go2rtc",
+                    "exist_go2rtc": "Add StreaMGL from existing go2rtc stream"
+                }
+            },
+            "add_rtsp": {
+                "description": "Add a new StreaMGL directly from RTSP TCP."
+            },
+            "new_go2rtc": {
+                "description": "Add a new StreaMGL via go2rtc."
+            },
+            "exist_go2rtc": {
+                "description": "Add a new StreaMGL from an existing go2rtc stream."
+            },
+            "configure": {
+                "description": "Configure the integration",
+                "menu_options": {
+                    "config_gallery": "Configure Gallery Options",
+                    "config_zone": "Configure Zones",
+                    "config_alert": "Configure Alerts",
+                    "finalize": "Finalize"
+                }
+            },
+            "config_options": {
+                "description": "StreaMGL Options"
+            },
+            "config_zone": {
+                "description": "Addition / Deletion of Zones"
+            },
+            "config_alert": {
+                "description": "Addition / Deletion of Alerts"
+            },
+            "finalize": {
+                "description": "Finalize the creation of the integration"
+            },
+            "reconfigure": {
+                "description": "Re configure the integration"
+            }
+        },
+        "abort": {
+            "not_implemented": "Not Implemented (yet)",
+            "no_go2rtc_stream": "There is no go2rtc existing stream."
+        },
+        "error": {
+            "already_exists": "A go2rtc stream with the same name already exists."
+        }
+    },
+    "services": {
+        "start_recording": {
+            "name": "Start Record",
+            "description": "Starts a recording of a live stream.",
+            "fields": {
+                "streamgl": {
+                    "description": "The name of the StreaMGL to be recorded.",
+                    "name": "StreaMGL"
+                },
+                "trigger": {
+                    "description": "What triggers the recording. If a recording with the same trigger is already on going it will be stopped.",
+                    "name": "Trigger"
+                },
+                "duration": {
+                    "description": "Planned duration of the recording. The actual duration may vary.",
+                    "name": "Duration"
+                },
+                "lookback": {
+                    "description": "Minimum lookback period to include in the recording (in addition to the duration). The actual length of the lookback period may vary.",
+                    "name": "Lookback"
+                }
+            }
+        },
+        "stop_recording": {
+            "name": "Stop Record",
+            "description": "Stops the recording of a live stream.",
+            "fields": {
+                "streamgl": {
+                    "description": "The name of the recording StreaMGL.",
+                    "name": "StreaMGL"
+                },
+                "trigger": {
+                    "description": "What triggered the recording.",
+                    "name": "Trigger"
+                }
+            }
+        }
+    }
+}

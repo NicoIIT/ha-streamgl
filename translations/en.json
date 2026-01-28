@@ -1,0 +1,25 @@
+{
+    "services": {
+        "sart_recording": {
+            "description": "Creates a recording of a live camera feed.",
+            "fields": {
+                "duration": {
+                    "description": "Planned duration of the recording. The actual duration may vary.",
+                    "name": "Duration"
+                },
+                "filename": {
+                    "description": "Full path to filename. Must be mp4.",
+                    "name": "Filename"
+                },
+                "lookback": {
+                    "description": "Planned lookback period to include in the recording (in addition to the duration). Only available if there is currently an active HLS stream. The actual length of the lookback period may vary.",
+                    "name": "Lookback"
+                }
+            },
+            "name": "Record"
+        },
+        "stop_recording": {
+            "description": "Stops the recording of a live camera feed."
+        }
+    }
+}

@@ -1,0 +1,86 @@
+{
+    "name": "NicoIIT/ble_adv",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "forwardPorts": [
+        8123
+    ],
+    "portsAttributes": {
+        "8123": {
+            "label": "Home Assistant",
+            "onAutoForward": "notify"
+        }
+    },
+    "containerEnv": {
+        "PYTHONPATH": ":${containerWorkspaceFolder}/custom_components",
+        "GIT_EDITOR": "code --wait"
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "charliermarsh.ruff",
+                "github.vscode-pull-request-github",
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "ryanluker.vscode-coverage-gutters"
+            ],
+            "settings": {
+                "files.eol": "\n",
+                "editor.tabSize": 4,
+                "editor.formatOnPaste": true,
+                "editor.formatOnSave": true,
+                "editor.formatOnType": false,
+                "files.trimTrailingWhitespace": true,
+                "python.analysis.typeCheckingMode": "basic",
+                "python.analysis.autoImportCompletions": true,
+                "python.analysis.extraPaths": [
+                    "/home/vscode/.local/lib/python3.13/site-packages"
+                ],
+                "python.defaultInterpreterPath": "/usr/local/bin/python",
+                "[python]": {
+                    "editor.defaultFormatter": "charliermarsh.ruff"
+                },
+                "tasks": {
+                    "version": "2.0.0",
+                    "tasks": [
+                        {
+                            "label": "lint",
+                            "type": "shell",
+                            "command": "ruff format . && ruff check . --fix",
+                            "problemMatcher": []
+                        },
+                        {
+                            "label": "test",
+                            "type": "shell",
+                            "command": "pytest",
+                            "problemMatcher": []
+                        },
+                        {
+                            "label": "run",
+                            "type": "shell",
+                            "command": "hass --config config",
+                            "problemMatcher": []
+                        },
+                        {
+                            "label": "clean",
+                            "type": "shell",
+                            "command": "git clean -f -X config",
+                            "problemMatcher": []
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    "remoteUser": "vscode",
+    "features": {
+        "ghcr.io/devcontainers-extra/features/apt-packages:1": {
+            "packages": [
+                "ffmpeg",
+                "libturbojpeg0",
+                "libpcap-dev"
+            ]
+        }
+    }
+}

@@ -1,0 +1,38 @@
+name: Python tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "main"
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      # Setup
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: "pip"
+      - name: Install dependencies
+        run: pip install -r .devcontainer/requirements.txt
+
+      # PyTest
+      # - name: Test with pytest
+      #   run: |
+      #     export PYTHONPATH=:custom_components
+      #     pytest
+
+      # Ruff
+      - name: "Ruff Lint"
+        run: python3 -m ruff check .
+      - name: "Ruff Format"
+        run: python3 -m ruff format . --check

@@ -1,0 +1,18 @@
+{
+  "domain": "streamgl",
+  "name": "Stream, Motion and Gallery",
+  "after_dependencies": [
+    "go2rtc"
+  ],
+  "codeowners": [
+    "@NicoIIT"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/NicoIIT/ha-streamgl",
+  "integration_type": "entity",
+  "issue_tracker": "https://github.com/NicoIIT/ha-streamgl/issues",
+  "requirements": [
+    "pyav"
+  ],
+  "version": "0.0.0"
+}

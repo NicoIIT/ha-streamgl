@@ -1,0 +1,26 @@
+# To upgrade homeassistant version:
+# 1. Update the version below
+# 2. Remove the content of the file 'req_ha_default_config'
+# 3. Rebuild the container
+# 4. run the same command several time until there is no output anymore:
+#     timeout 60 hass -c config |& sed -n -e 's/.*Attempting install of //p'
+# 5. copy the output to the file 'req_ha_default_config'
+# 6. Rebuild the container
+# 7. Check the 'hass -c config' starts without the need to install new pip packets
+# 8. Run 'pytest' and correct tests if needed
+# 9. Update the hacs.json file
+
+homeassistant==2026.1.0
+colorlog==6.10.1
+pip>=21.3.1
+ruff==0.14.3
+
+# ble_adv requirements
+pyav
+
+# for unit tests
+coverage>=7.2.1
+pytest>=7.2.2
+pytest-asyncio>=0.20.3
+pytest-cov>=3.0.0
+pytest-homeassistant-custom-component>=0.13.20

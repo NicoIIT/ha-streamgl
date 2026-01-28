@@ -1,0 +1,33 @@
+start_recording:
+  target:
+    entity:
+      domain: camera
+  fields:
+    filename:
+      example: "/tmp/snapshot_{{ entity_id.name }}.mp4"
+      selector:
+        text:
+    gallery:
+      example: "/media/rec/my_camera"
+      selector:
+        text:
+    duration:
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 3600
+          unit_of_measurement: seconds
+    lookback:
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 300
+          unit_of_measurement: seconds
+
+stop_recording:
+  target:
+    entity:
+      domain: camera
+

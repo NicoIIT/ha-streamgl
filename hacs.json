@@ -1,0 +1,8 @@
+{
+    "name": "Stream, Motion and Gallery",
+    "zip_release": true,
+    "hide_default_branch": true,
+    "homeassistant": "2026.1.0",
+    "hacs": "2.0.1",
+    "filename": "release.zip"
+}

@@ -1,0 +1,22 @@
+# This file allows the pre-install of the python dependencies needed by the components defined in the config,
+# directly in the docker container, avoiding the re install by hass on 'simple' container rebuild
+# see requirements.txt to know how to generate the content of this file
+home-assistant-frontend==20260107.0
+ha-ffmpeg==3.2.2
+async-upnp-client==0.46.1
+aiousbwatcher==1.1.1
+pyserial==3.5
+aiodhcpwatcher==1.2.1
+aiodiscover==2.7.1
+hassil==3.5.0
+home-assistant-intents==2026.1.6
+mutagen==1.47.0
+bleak==2.0.0
+bleak-retry-connector==4.4.3
+pysilero-vad==3.0.1
+pyspeex-noise==1.0.2
+PyTurboJPEG==1.8.0
+python-matter-server==8.1.2
+file-read-backwards==2.0.0
+go2rtc-client==0.4.0
+av==16.0.1

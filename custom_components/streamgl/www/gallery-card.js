@@ -16,6 +16,8 @@ class StreaMGLGalleryCard extends LitElement {
             date_input: {},
             time_input: {},
             view_mode: {},
+            update_sensor: {},
+            gallery_last_update: {},
         };
     }
 
@@ -49,7 +51,7 @@ class StreaMGLGalleryCard extends LitElement {
                     `;
                 })}
           </div>
-          ${this.currentResourceIndex != undefined ? html`<div class="resource-viewer" @keydown="${ev => this._keyNavigation(ev)}">
+          ${this.currentResourceIndex != undefined ? html`<div class="resource-viewer" >
             <figure>
               ${this._isVideoMode() ?
                     html`<video controls src="${this._currentResourceUrl()}#t=0.1" @canplay="${ev => ev.target.play()}"/>`
@@ -58,7 +60,7 @@ class StreaMGLGalleryCard extends LitElement {
             </figure>
             <div class="title">${this._currentResourceFullTitle()}</div>
             <div class="button-bar">
-            ${Object.entries({ 'tnb': 'mdi:image-size-select-small', 'clip': 'mdi:video', 'snap': 'mdi:image' }).map(([mode, icon]) => {
+            ${Object.entries({ 'clip': 'mdi:video', 'snap': 'mdi:image' }).map(([mode, icon]) => {
                     return (mode in this._currentResource().urls) ?
                         html`<button class="btn-mode${this.view_mode == mode ? '-selected' : ''}" @click="${ev => this._selectMode(mode)}"><ha-icon icon="${icon}"/></button>`
                         : html``
@@ -90,19 +92,45 @@ class StreaMGLGalleryCard extends LitElement {
 
         this.config = config;
 
+        this.update_sensor = this.config.update_sensor === undefined ? 'sensor.' + this.config.streamgl.replace(/-/g, "_") + '_data_size' : this.config.update_sensor
+        this.gallery_last_update = ''
+
         this.view_mode = 'clip';
+
+        window.addEventListener("keydown", (evt) => {
+            if (this.currentResourceIndex === undefined) {
+                return
+            }
+            switch (evt.code) {
+                case "ArrowDown":
+                case "ArrowRight":
+                    this._selectNextResource();
+                    break;
+                case "ArrowUp":
+                case "ArrowLeft":
+                    this._selectPrevResource();
+                    break;
+                default:
+                // null
+            }
+        });
 
         if (this._hass !== undefined)
             this._loadResources(this._hass);
+
     }
 
     set hass(hass) {
         this._hass = hass;
-        console.log(hass.states)
+        let new_last_update = (this.sensor_name in hass.states) ? hass.states[this.sensor_name].last_updated : ""
         if (this.resources == null) {
             this._setupDateAndTime();
             this._loadResources(this._hass);
         }
+        else if (this.gallery_last_update !== new_last_update) {
+            this._loadResources(this._hass);
+        }
+        this.gallery_last_update = new_last_update
     }
 
     static getConfigElement() {
@@ -227,21 +255,6 @@ class StreaMGLGalleryCard extends LitElement {
     _currentResourceFullTitle() {
         let title = (this.config.name === undefined) ? this._currentResource().streamgl : this.config.name
         return title + " - " + this._currentResource().trigger + " - " + this._currentResource().caption
-    }
-
-    _keyNavigation(evt) {
-        switch (evt.code) {
-            case "ArrowDown":
-            case "ArrowRight":
-                this._selectNextResource();
-                break;
-            case "ArrowUp":
-            case "ArrowLeft":
-                this._selectPrevResource();
-                break;
-            default:
-            // null
-        }
     }
 
     _pad2(number) {

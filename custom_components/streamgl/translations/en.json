@@ -29,7 +29,7 @@
             "configure": {
                 "description": "Configure the integration",
                 "menu_options": {
-                    "config_gallery": "Configure Gallery Options",
+                    "config_options": "Configure Options",
                     "config_zone": "Configure Zones",
                     "config_alert": "Configure Alerts",
                     "finalize": "Finalize"
@@ -94,6 +94,35 @@
                     "description": "What triggered the recording.",
                     "name": "Trigger"
                 }
+            }
+        },
+        "snapshot": {
+            "name": "Snapshot",
+            "description": "Take a snaphost of the StreaMGL.",
+            "fields": {
+                "streamgl": {
+                    "description": "The name of the StreaMGL.",
+                    "name": "StreaMGL"
+                },
+                "trigger": {
+                    "description": "What triggered the snapshot.",
+                    "name": "Trigger"
+                }
+            }
+        }
+    },
+    "entity": {
+        "binary_sensor": {
+            "recorder": {
+                "name": "Recorder"
+            },
+            "state": {
+                "name": "Streamer"
+            }
+        },
+        "sensor": {
+            "size": {
+                "name": "Gallery Size"
             }
         }
     }

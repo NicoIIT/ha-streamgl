@@ -2,10 +2,10 @@
 
 import asyncio
 import logging
+from collections.abc import Callable, Coroutine
 from typing import Any, Literal
 
 from aiohttp import ClientError, ClientResponse, ClientTimeout
-from custom_components.webrtc.utils import Server  # pyright: ignore[reportMissingImports]
 from homeassistant.components.lovelace.const import DOMAIN as LOVELACE_DOMAIN
 from homeassistant.components.lovelace.resources import ResourceStorageCollection
 from homeassistant.core import HomeAssistant
@@ -17,6 +17,13 @@ from yarl import URL
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+try:
+    # webrtc may not be included
+    from custom_components.webrtc.utils import Server
+except ImportError:
+    _LOGGER.debug("webrtc not available")
+
 WEBRTC_DOMAIN = "webrtc"
 
 logging.getLogger("aiohttp").setLevel(logging.DEBUG)
@@ -172,3 +179,19 @@ async def async_register_custom_card(hass: HomeAssistant, name: str) -> None:
     else:
         _LOGGER.debug(f"Adding Lovelace resource: {url2}")
         await resources.async_create_item({"res_type": "module", "url": url2})
+
+
+class Updatable:
+    """Define an updatable class registering callbacks to be called on update."""
+
+    def __init__(self) -> None:
+        self._update_clbks: list[Callable[[], Coroutine]] = []
+
+    def add_on_update(self, callback: Callable[[], Coroutine]) -> None:
+        """Register the update callback."""
+        self._update_clbks.append(callback)
+
+    async def update(self) -> None:
+        """To be called by children on update."""
+        for clbk in self._update_clbks:
+            await clbk()

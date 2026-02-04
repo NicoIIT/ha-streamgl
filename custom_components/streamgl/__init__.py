@@ -12,6 +12,7 @@ from homeassistant.components.websocket_api import async_register_command, conne
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_OPTIONS, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant, ServiceCall
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt
 
@@ -21,6 +22,7 @@ from .const import (
     CONF_GALLERY,
     CONF_STREAM,
     DOMAIN,
+    PLATFORMS,
 )
 from .gallery import Gallery
 from .stream import PacketFramer, PacketRecorder, SnapshotHandler, Streamer
@@ -30,6 +32,7 @@ _LOGGER = logging.getLogger(__name__)
 
 START_RECORDING_SERVICE: Final = "start_recording"
 STOP_RECORDING_SERVICE: Final = "stop_recording"
+SNAPSHOT_SERVICE: Final = "snapshot"
 
 CONF_STREAMGL: Final = "streamgl"
 CONF_TRIGGER: Final = "trigger"
@@ -63,6 +66,13 @@ STOP_RECORDING_SCHEMA = vol.Schema(
     }
 )
 
+SNAPSHOT_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_STREAMGL): vol.Coerce(str),
+        vol.Optional(CONF_TRIGGER): vol.Coerce(str),
+    }
+)
+
 
 class StreaMGL(Streamer):
     """Wrapper StreaMGL including Recorder, Snapper and support for go2rtc and rtsp source."""
@@ -76,6 +86,11 @@ class StreaMGL(Streamer):
         self.add_packet_handler(self.framer)
         self.snapper: SnapshotHandler = SnapshotHandler()
         self.framer.add_frame_handler(self.snapper)
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return the device info."""
+        return DeviceInfo(identifiers={(DOMAIN, self.name)}, name=self.name)
 
     async def async_get_src(self) -> tuple[str, dict[str, str]]:
         """Get the tuple src / src_options."""
@@ -130,22 +145,32 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     except Exception as err:
         _LOGGER.warning("Failed to setup Custom Galery Card.", exc_info=err, stack_info=True)
 
-    # streamgl start / stop record services
+    # streamgl start record / stop record / snapshot services
     async def start_recording(call: ServiceCall) -> None:
         streamer = await async_get_streamer(hass, call.data[CONF_STREAMGL])
         trigger = call.data[CONF_TRIGGER]
         now = dt.as_local(dt.utcnow())
+        tnb_path = await gallery.async_create_media_path(streamer.name, trigger, now, "tnb")
+        await streamer.snapper.take(tnb_path, 320)
         record_path = await gallery.async_create_media_path(streamer.name, trigger, now, "clip")
         await streamer.recorder.start_recording(trigger, record_path, call.data[CONF_LOOKBACK], call.data[CONF_DURATION])
-        tnb_path = await gallery.async_create_media_path(streamer.name, trigger, now, "tnb")
-        await streamer.snapper.take(tnb_path)
 
     async def stop_recording(call: ServiceCall) -> None:
         streamer = await async_get_streamer(hass, call.data[CONF_STREAMGL])
         await streamer.recorder.stop_recording(call.data[CONF_TRIGGER])
 
+    async def snapshot(call: ServiceCall) -> None:
+        streamer = await async_get_streamer(hass, call.data[CONF_STREAMGL])
+        trigger = call.data[CONF_TRIGGER]
+        now = dt.as_local(dt.utcnow())
+        tnb_path = await gallery.async_create_media_path(streamer.name, trigger, now, "tnb")
+        await streamer.snapper.take(tnb_path, 320)
+        snap_path = await gallery.async_create_media_path(streamer.name, trigger, now, "snap")
+        await streamer.snapper.take(snap_path)
+
     hass.services.async_register(DOMAIN, START_RECORDING_SERVICE, start_recording, START_RECORDING_SCHEMA)
     hass.services.async_register(DOMAIN, STOP_RECORDING_SERVICE, stop_recording, STOP_RECORDING_SCHEMA)
+    hass.services.async_register(DOMAIN, SNAPSHOT_SERVICE, snapshot, SNAPSHOT_SCHEMA)
 
     # Stop streamers on HA Stop
     async def _async_stop(_: Event) -> None:
@@ -160,17 +185,16 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up from a config entry."""
-    # //await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     _LOGGER.debug(f"Config entry: {entry.data}")
     stream_conf: dict[str, Any] = entry.data[CONF_STREAM]
 
-    # Create the StreaMGL
+    # Create the StreaMGL and IMMEDIATLY check if last setup entry, triggering Post Setup
     hass.data[DOMAIN][CONF_STREAM][entry.entry_id] = StreaMGL(hass, entry.title, stream_conf)
-
-    # Check if all other entries have been setup and execute post setup actions
     if len(hass.config_entries.async_entries(DOMAIN, False, False)) == len(hass.data[DOMAIN][CONF_STREAM]):
         await async_post_setup(hass)
+
+    # initialize entities
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
@@ -192,6 +216,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.debug(f"Unloading entry {entry.unique_id}")
     await (await async_get_all_streams(hass)).pop(entry.entry_id).async_final()
+    await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     return True
 
 
@@ -224,10 +249,10 @@ async def websocket_gallery_list(hass: HomeAssistant, connection: connection.Act
                 error("resolve_strinvalid_dateeamgl_failed", f"Invalid date: {msg['date']}")
                 return
         else:
-            adate = dt.as_local(dt.utcnow())
+            adate = dt.utcnow()
 
         gallery = await async_get_gallery(hass)
-        medias = await gallery.async_get_medias(streamer.name, trigs, adate)
+        medias = await gallery.async_get_medias(streamer.name, trigs, dt.as_local(adate))
 
     except Exception as err:
         error("unknown_exception", str(err))

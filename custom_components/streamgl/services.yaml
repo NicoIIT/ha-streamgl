@@ -2,7 +2,7 @@ start_recording:
   fields:
     streamgl:
       required: true
-      example: "streamgl.mystream"
+      example: "mystream"
       selector:
         text:
     trigger:
@@ -29,7 +29,20 @@ stop_recording:
   fields:
     streamgl:
       required: true
-      example: "streamgl.mystream"
+      example: "mystream"
+      selector:
+        text:
+    trigger:
+      default: "manual"
+      example: "manual"
+      selector:
+        text:
+
+snapshot:
+  fields:
+    streamgl:
+      required: true
+      example: "mystream"
       selector:
         text:
     trigger:

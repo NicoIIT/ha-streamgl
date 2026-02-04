@@ -28,6 +28,10 @@ async def create_path(hass: HomeAssistant, path: Path) -> None:
         await hass.loop.run_in_executor(None, _internal_create)
 
 
+def _safe_iter_path(path: Path) -> Generator[Path] | list:
+    return path.iterdir() if path.exists() else []
+
+
 class Gallery(LocalSource):
     """Gallery."""
 
@@ -56,9 +60,6 @@ class Gallery(LocalSource):
 
         str_date = adate.strftime("%y%m%d")
 
-        def _safe_iter_path(path: Path) -> Generator[Path] | list:
-            return path.iterdir() if path.exists() else []
-
         def _get_file_list() -> list[dict[str, Any]]:
             gallery: dict[str, dict[str, Any]] = {}
             trig_paths = [x for x in _safe_iter_path(self._base_path.joinpath(streamgl)) if not trigs or x.name in trigs]
@@ -68,7 +69,7 @@ class Gallery(LocalSource):
                         continue
                     tm = f"{f.name[0:6]}"
                     if tm not in gallery:
-                        gallery[tm] = {"time": tm, "date": str_date, "trigger": trig_path.name, "streamgl": streamgl, "urls": {}}
+                        gallery[tm] = {"name": f.name, "time": tm, "date": str_date, "trigger": trig_path.name, "streamgl": streamgl, "urls": {}}
                     gallery[tm]["urls"][file_type] = f
             return [gallery[x] for x in sorted(gallery.keys())]
 
@@ -80,3 +81,19 @@ class Gallery(LocalSource):
                 data["urls"][x] = async_process_play_media_url(self.hass, media.url, allow_relative_url=True)
 
         return fl
+
+    async def get_stream_gallery_sizes(self, streamgl: str, st: float | None, et: float | None) -> dict[str, int]:
+        """Get the size of the gallery for a given stream, splitted by trigger, filtered by date folder creation start_time / end_time."""
+
+        def _get_sizes() -> dict[str, int]:
+            sizes: dict[str, int] = {}
+            for trig_path in _safe_iter_path(self._base_path.joinpath(streamgl)):
+                trig_size: int = 0
+                for date_path in _safe_iter_path(trig_path):
+                    mod_time = date_path.stat().st_ctime
+                    if (st is None or mod_time >= st) and (et is None or mod_time <= et):
+                        trig_size += sum(f.stat().st_size for f in date_path.glob("**/*") if f.is_file())
+                sizes[trig_path.name] = trig_size
+            return sizes
+
+        return await self.hass.loop.run_in_executor(None, _get_sizes)

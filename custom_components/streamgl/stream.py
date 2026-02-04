@@ -16,6 +16,8 @@ import numpy as np
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 from homeassistant.helpers.event import async_call_later
 
+from .util import Updatable
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -30,10 +32,11 @@ class _TimePacket:
     pkt: av.Packet
 
 
-class Streamer:
+class Streamer(Updatable):
     """Handle the Stream."""
 
     def __init__(self, hass: HomeAssistant, name: str, max_inactivity_seconds: int = 15) -> None:
+        Updatable.__init__(self)
         self.hass = hass
         self.name: str = name
         self.logger = _StreamLoggingAdapter(_LOGGER, {"name": self.name})
@@ -50,6 +53,15 @@ class Streamer:
         self._src: str = ""
         self._src_options: dict[str, str] = {}
 
+    @property
+    def streaming(self) -> bool:
+        """Get the state of the stream."""
+        return self._running
+
+    def _set_running(self, running: bool) -> None:
+        self._running = running
+        asyncio.run_coroutine_threadsafe(self.update(), self.hass.loop)
+
     def add_packet_handler(self, ph) -> None:  # noqa: ANN001
         """Register a Packet handler."""
         ph.set_parent(self)
@@ -61,8 +73,9 @@ class Streamer:
 
     async def async_init(self) -> None:
         """Init, ensuring the process is done only once."""
+        await self.update()
+        self._src, self._src_options = await self.async_get_src()
         if self._permanent_read_task is None:
-            self._src, self._src_options = await self.async_get_src()
             self._permanent_read_task = asyncio.create_task(self._permanent_read())
 
     async def async_final(self) -> None:
@@ -79,10 +92,10 @@ class Streamer:
     async def _permanent_read(self) -> None:
         while not self._exit_requested:
             # if not connected, launch connection
-            if not self._running:
+            if not self.streaming:
                 self._con = await self.hass.loop.run_in_executor(None, self._open)
                 if self._con is not None:
-                    self._running = True
+                    self._set_running(True)
                     self._read_task = self.hass.loop.run_in_executor(None, self._read, self.hass.loop)
             await asyncio.sleep(5.0)
         self.logger.debug("Closed")
@@ -120,7 +133,7 @@ class Streamer:
             self.logger.warning("Timeout waiting for frame, re opening source.")
         except Exception:
             self.logger.exception("Exception reading packet")
-        self._running = False
+        self._set_running(False)
 
     async def _async_process_packet(self, packet: av.Packet) -> None:
         # Process a Packet
@@ -208,20 +221,20 @@ class _RecordItem:
         if self._out_first_pts is None or self._out_first_dts is None or self._out_stream is None or self._output is None:
             return
         for packet in packets:
-            if packet.pkt.pts is not None:
+            if packet.pkt.pts is not None and packet.pkt.dts is not None:
                 # Copy the av.Packet else the update of the pts will break the global demuxing
                 # which prevents simultaneous recordings, and even further recordings...
                 new_pkt = av.Packet(packet.pkt.buffer_size)
                 new_pkt.update(packet.pkt)  # pyright: ignore[reportArgumentType], the method definition in pyAv is wrong
                 new_pkt.pts = packet.pkt.pts - self._out_first_pts
-                new_pkt.dts = new_pkt.pts
+                new_pkt.dts = packet.pkt.dts - self._out_first_dts
                 new_pkt.stream = self._out_stream
                 new_pkt.duration = packet.pkt.duration
                 new_pkt.time_base = packet.pkt.time_base
                 self._output.mux(new_pkt)
 
     def _finish(self, packets: list[_TimePacket]) -> None:
-        if self._output is not None and self._out_stream is not None:
+        if self._output is not None:
             self._write_packets(packets)
             self._output.close()
             self._output = None
@@ -238,15 +251,21 @@ class _RecordItem:
             self._packets.append(packet)
 
 
-class PacketRecorder(PacketHandler):
+class PacketRecorder(PacketHandler, Updatable):
     """Store Packets with a given lookback in order to be able to use them for recording."""
 
     def __init__(self, max_lookback: int = 10) -> None:
-        super().__init__()
+        PacketHandler.__init__(self)
+        Updatable.__init__(self)
         self._max_lookback = max_lookback
         self._lookback_packets: list[_TimePacket] = []
         self._records: dict[str, _RecordItem] = {}
         self._max_clbk: dict[str, CALLBACK_TYPE] = {}
+
+    @property
+    def triggers(self) -> list[str]:
+        """Access the on going record triggers."""
+        return list(self._records.keys())
 
     async def close(self) -> None:
         """Close the PacketRecorder."""
@@ -273,28 +292,30 @@ class PacketRecorder(PacketHandler):
         for rec in self._records.values():
             await rec.add_packet(packet)
 
-    async def start_recording(self, key: str, path: Path, lookback: int = 2, max_duration: int = 360) -> None:
+    async def start_recording(self, trigger: str, path: Path, lookback: int = 2, max_duration: int = 360) -> None:
         """Start recording."""
         # Stop On Going record with the same name if any
-        await self.stop_recording(key)
+        await self.stop_recording(trigger)
 
         # Create the RecordItem, get the relevant lookback packets and start the record
-        self.logger.debug(f"Start Recording: '{key}' - {path}")
+        self.logger.debug(f"Start Recording: '{trigger}' - {path}")
         rec = _RecordItem(path)
         await rec.start(self._get_lookback_packets(lookback))
 
         async def stop_rec(_tm: datetime.datetime) -> None:
-            await self.stop_recording(key)
+            await self.stop_recording(trigger)
 
-        self._max_clbk[key] = async_call_later(self.hass, max_duration, stop_rec)
-        self._records[key] = rec
+        self._max_clbk[trigger] = async_call_later(self.hass, max_duration, stop_rec)
+        self._records[trigger] = rec
+        await self.update()
 
-    async def stop_recording(self, key: str) -> None:
+    async def stop_recording(self, trigger: str) -> None:
         """Stop recording."""
-        if key in self._records:
-            self.logger.debug(f"Stop Recording: '{key}'")
-            self._max_clbk.pop(key)
-            await self._records.pop(key).stop()
+        if trigger in self._records:
+            self.logger.debug(f"Stop Recording: '{trigger}'")
+            self._max_clbk.pop(trigger)
+            await self._records.pop(trigger).stop()
+            await self.update()
 
 
 class PacketFramer(PacketHandler):
@@ -312,7 +333,9 @@ class PacketFramer(PacketHandler):
         self._frame_handlers.append(fh)
 
     async def close(self) -> None:
-        """Close the PacketRecorder."""
+        """Close the PacketFramer."""
+        for fh in self._frame_handlers:
+            await fh.close()
 
     async def process(self, packet: _TimePacket) -> None:
         """Process the packet."""
@@ -356,10 +379,11 @@ class FrameHandler:
         """Process the decoded frame as rgb24 numpy array [height,width,rgb]."""
 
 
-class SnapshotHandler(FrameHandler):
+class SnapshotHandler(FrameHandler, Updatable):
     """Handler to take a Snapshot."""
 
     def __init__(self) -> None:
+        Updatable.__init__(self)
         self._frame: av.VideoFrame | None = None
         self._frame_recv: asyncio.Event = asyncio.Event()
 
@@ -373,7 +397,7 @@ class SnapshotHandler(FrameHandler):
             self._frame = frame
             self._frame_recv.set()
 
-    async def take(self, path: Path, factor: float | None = None) -> None:
+    async def take(self, path: Path, width: int | None = None) -> None:
         """Take a snapshot."""
         # activate the handler and Wait for a Frame to be received
         self.logger.debug(f"Snapshot requested to {path}")
@@ -391,10 +415,12 @@ class SnapshotHandler(FrameHandler):
         # Save the frame
         def save_frame(frame: av.VideoFrame) -> None:
             Path.mkdir(path.parent, parents=True, exist_ok=True)
-            if factor is not None:
-                frame.to_image(width=int(frame.width * factor), height=int(frame.height * factor)).save(path)
+            if width is not None:
+                factor: float = width / frame.width
+                frame.to_image(width=width, height=int(frame.height * factor)).save(path)
             else:
                 frame.to_image().save(path)
             self.logger.debug("Snapshot saved")
 
         self.hass.loop.run_in_executor(None, save_frame, self._frame)
+        await self.update()

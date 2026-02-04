@@ -12,7 +12,7 @@ logger:
   default: info
   logs:
     custom_components.streamgl: debug
-    custom_components.webrtc: debug
+    # custom_components.webrtc: debug
 
 streamgl:
   gallery: config/medias

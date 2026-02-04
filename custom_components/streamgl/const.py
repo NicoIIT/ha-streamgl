@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "streamgl"
+PLATFORMS: Final = ["binary_sensor", "sensor"]
 
 CONF_STREAM: Final = "stream"
 CONF_GALLERY: Final = "gallery"

@@ -92,7 +92,7 @@ class StreaMGLGalleryCard extends LitElement {
 
         this.config = config;
 
-        this.update_sensor = this.config.update_sensor === undefined ? 'sensor.' + this.config.streamgl.replace(/-/g, "_") + '_data_size' : this.config.update_sensor
+        this.update_sensor = (this.config.update_sensor === undefined) ? 'sensor.' + this.config.streamgl.replace(/-/g, "_") + '_gallery_size' : this.config.update_sensor
         this.gallery_last_update = ''
 
         this.view_mode = 'clip';
@@ -122,7 +122,7 @@ class StreaMGLGalleryCard extends LitElement {
 
     set hass(hass) {
         this._hass = hass;
-        let new_last_update = (this.sensor_name in hass.states) ? hass.states[this.sensor_name].last_updated : ""
+        let new_last_update = (this.update_sensor in hass.states) ? hass.states[this.update_sensor].last_updated : ""
         if (this.resources == null) {
             this._setupDateAndTime();
             this._loadResources(this._hass);

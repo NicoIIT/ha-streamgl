@@ -11,7 +11,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.websocket_api import async_register_command, connection, decorators
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_OPTIONS, EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import Event, HomeAssistant, ServiceCall
+from homeassistant.core import Event, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt
@@ -146,7 +146,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         _LOGGER.warning("Failed to setup Custom Galery Card.", exc_info=err, stack_info=True)
 
     # streamgl start record / stop record / snapshot services
-    async def start_recording(call: ServiceCall) -> None:
+    async def start_recording(call: ServiceCall) -> ServiceResponse | None:
         streamer = await async_get_streamer(hass, call.data[CONF_STREAMGL])
         trigger = call.data[CONF_TRIGGER]
         now = dt.as_local(dt.utcnow())
@@ -154,12 +154,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         await streamer.snapper.take(tnb_path, 320)
         record_path = await gallery.async_create_media_path(streamer.name, trigger, now, "clip")
         await streamer.recorder.start_recording(trigger, record_path, call.data[CONF_LOOKBACK], call.data[CONF_DURATION])
+        if call.return_response:
+            return {"tnb": await gallery.get_media_url(tnb_path), "clip": await gallery.get_media_url(record_path)}
+        return None
 
     async def stop_recording(call: ServiceCall) -> None:
         streamer = await async_get_streamer(hass, call.data[CONF_STREAMGL])
         await streamer.recorder.stop_recording(call.data[CONF_TRIGGER])
 
-    async def snapshot(call: ServiceCall) -> None:
+    async def snapshot(call: ServiceCall) -> ServiceResponse | None:
         streamer = await async_get_streamer(hass, call.data[CONF_STREAMGL])
         trigger = call.data[CONF_TRIGGER]
         now = dt.as_local(dt.utcnow())
@@ -167,10 +170,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         await streamer.snapper.take(tnb_path, 320)
         snap_path = await gallery.async_create_media_path(streamer.name, trigger, now, "snap")
         await streamer.snapper.take(snap_path)
+        if call.return_response:
+            return {"tnb": await gallery.get_media_url(tnb_path), "snap": await gallery.get_media_url(snap_path)}
+        return None
 
-    hass.services.async_register(DOMAIN, START_RECORDING_SERVICE, start_recording, START_RECORDING_SCHEMA)
+    hass.services.async_register(DOMAIN, START_RECORDING_SERVICE, start_recording, START_RECORDING_SCHEMA, SupportsResponse.OPTIONAL)
     hass.services.async_register(DOMAIN, STOP_RECORDING_SERVICE, stop_recording, STOP_RECORDING_SCHEMA)
-    hass.services.async_register(DOMAIN, SNAPSHOT_SERVICE, snapshot, SNAPSHOT_SCHEMA)
+    hass.services.async_register(DOMAIN, SNAPSHOT_SERVICE, snapshot, SNAPSHOT_SCHEMA, SupportsResponse.OPTIONAL)
 
     # Stop streamers on HA Stop
     async def _async_stop(_: Event) -> None:

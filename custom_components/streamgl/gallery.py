@@ -55,6 +55,12 @@ class Gallery(LocalSource):
         await create_path(self.hass, dir_path)
         return dir_path.joinpath(f"{adate.strftime('%H%M%S')}-{self.TYPE_MAP[atype]}")
 
+    async def get_media_url(self, media_path: Path) -> str:
+        """Get an authentified url from a full path."""
+        identifier = Path(self.GALLERY_DIR, media_path.relative_to(self._base_path)).as_posix()
+        media = await self.async_resolve_media(MediaSourceItem(self.hass, DOMAIN, identifier, None))
+        return async_process_play_media_url(self.hass, media.url, allow_relative_url=True)
+
     async def async_get_medias(self, streamgl: str, trigs: list[str], adate: datetime) -> list[dict[str, Any]]:
         """Get the medias corresponding to the stram / triggers at the given date."""
 
@@ -76,10 +82,7 @@ class Gallery(LocalSource):
         fl = await self.hass.loop.run_in_executor(None, _get_file_list)
         for data in fl:
             for x, f in data["urls"].items():
-                identifier = Path(self.GALLERY_DIR, f.relative_to(self._base_path)).as_posix()
-                media = await self.async_resolve_media(MediaSourceItem(self.hass, DOMAIN, identifier, None))
-                data["urls"][x] = async_process_play_media_url(self.hass, media.url, allow_relative_url=True)
-
+                data["urls"][x] = await self.get_media_url(f)
         return fl
 
     async def get_stream_gallery_sizes(self, streamgl: str, st: float | None, et: float | None) -> dict[str, int]:

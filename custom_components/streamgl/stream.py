@@ -30,6 +30,7 @@ class _StreamLoggingAdapter(logging.LoggerAdapter):
 class _TimePacket:
     end: datetime.datetime
     pkt: av.Packet
+    is_first_keyframe: bool
 
 
 class Streamer(Updatable):
@@ -46,8 +47,10 @@ class Streamer(Updatable):
         self._con: av.container.InputContainer | None = None
         self._permanent_read_task: asyncio.Task | None = None
         self._read_task: asyncio.Future | None = None
+        self._start_streaming_event: asyncio.Event = asyncio.Event()
 
-        self._running: bool = False
+        self._connected: bool = False
+        self._streaming: bool = False
         self._exit_requested: bool = False
 
         self._src: str = ""
@@ -56,10 +59,16 @@ class Streamer(Updatable):
     @property
     def streaming(self) -> bool:
         """Get the state of the stream."""
-        return self._running
+        return self._streaming
 
-    def _set_running(self, running: bool) -> None:
-        self._running = running
+    def _set_streaming(self, streaming: bool) -> None:
+        if streaming:
+            self._start_streaming_event.set()
+        else:
+            self._start_streaming_event.clear()
+        if streaming != self._streaming:
+            self.logger.info(f"{'Streaming started' if streaming else 'Streaming stopped'}")
+        self._streaming = streaming
         asyncio.run_coroutine_threadsafe(self.update(), self.hass.loop)
 
     def add_packet_handler(self, ph) -> None:  # noqa: ANN001
@@ -78,6 +87,10 @@ class Streamer(Updatable):
         if self._permanent_read_task is None:
             self._permanent_read_task = asyncio.create_task(self._permanent_read())
 
+    async def wait_for_streaming(self) -> None:
+        """Wait for the stream to be effectively streaming."""
+        await self._start_streaming_event.wait()
+
     async def async_final(self) -> None:
         """Finalize."""
         for ph in self._packet_handlers:
@@ -92,10 +105,10 @@ class Streamer(Updatable):
     async def _permanent_read(self) -> None:
         while not self._exit_requested:
             # if not connected, launch connection
-            if not self.streaming:
+            if not self._connected:
                 self._con = await self.hass.loop.run_in_executor(None, self._open)
                 if self._con is not None:
-                    self._set_running(True)
+                    self._connected = True
                     self._read_task = self.hass.loop.run_in_executor(None, self._read, self.hass.loop)
             await asyncio.sleep(5.0)
         self.logger.debug("Closed")
@@ -112,12 +125,16 @@ class Streamer(Updatable):
             self.logger.error("Connection to source refused: handle source issue")
             asyncio.run_coroutine_threadsafe(self.refresh_source(), self.hass.loop)
             return None
+        except av.error.HTTPNotFoundError as err:
+            self.logger.error("Stream not available: %s", err)
+            return None
         except Exception:
             self.logger.exception("Failed to open source.")
             return None
 
     def _read(self, loop: asyncio.AbstractEventLoop) -> None:
         self.logger.debug("Read started")
+        first_keyframe_recvd = False
         try:
             if self._con is None:
                 self.logger.error("Trying to read not initialized container")
@@ -125,20 +142,28 @@ class Streamer(Updatable):
             for packet in self._con.demux(self._con.streams.video[0]):
                 if packet.dts is None:
                     continue
-                asyncio.run_coroutine_threadsafe(self._async_process_packet(packet), loop)
+                if not first_keyframe_recvd:
+                    if packet.is_keyframe:
+                        first_keyframe_recvd = True
+                        self.logger.debug("First keyframe received.")
+                        self._set_streaming(True)
+                        asyncio.run_coroutine_threadsafe(self._async_process_packet(packet, True), loop)
+                else:
+                    asyncio.run_coroutine_threadsafe(self._async_process_packet(packet, False), loop)
                 if self._exit_requested:
                     break
             self.logger.debug("No more packet to read")
         except av.error.ExitError:
-            self.logger.warning("Timeout waiting for frame, re opening source.")
+            self.logger.warning("Timeout waiting for packet, re opening source.")
         except Exception:
             self.logger.exception("Exception reading packet")
-        self._set_running(False)
+        self._set_streaming(False)
+        self._connected = False
 
-    async def _async_process_packet(self, packet: av.Packet) -> None:
+    async def _async_process_packet(self, packet: av.Packet, is_first_key_frame: bool) -> None:
         # Process a Packet
         for ph in self._packet_handlers:
-            await ph.enqueue(_TimePacket(datetime.datetime.now(), packet))
+            await ph.enqueue(_TimePacket(datetime.datetime.now(), packet, is_first_key_frame))
 
     async def flush_video_stream_context(self) -> None:
         """Flush the video context. Needed in case of frame decoding started, then stopped and started again."""
@@ -194,7 +219,7 @@ class _RecordItem:
         self._output: av.container.OutputContainer | None = None
         self._out_stream: av.stream.Stream | None = None
         self._out_first_pts: int | None = None
-        self._out_first_dts: int | None = None
+        self._out_last_pts: int | None = None
         self._packets: list[_TimePacket] = []
         self._nb_encoded_pkt: int = 0
 
@@ -214,24 +239,29 @@ class _RecordItem:
         self._output = av.open(self._path, "w")
         self._out_stream = self._output.add_stream_from_template(packets[0].pkt.stream)
         self._out_first_pts = packets[0].pkt.pts
-        self._out_first_dts = packets[0].pkt.dts
         self._write_packets(packets)
 
     def _write_packets(self, packets: list[_TimePacket]) -> None:
-        if self._out_first_pts is None or self._out_first_dts is None or self._out_stream is None or self._output is None:
+        if self._out_first_pts is None or self._out_stream is None or self._output is None:
             return
         for packet in packets:
-            if packet.pkt.pts is not None and packet.pkt.dts is not None:
+            if packet.pkt.pts is not None and packet.pkt.duration is not None:
+                if self._out_last_pts is not None and packet.is_first_keyframe:
+                    # Discontinuity with previous packets: recompute first_pts
+                    self._out_first_pts = packet.pkt.pts - self._out_last_pts - packet.pkt.duration
                 # Copy the av.Packet else the update of the pts will break the global demuxing
                 # which prevents simultaneous recordings, and even further recordings...
                 new_pkt = av.Packet(packet.pkt.buffer_size)
                 new_pkt.update(packet.pkt)  # pyright: ignore[reportArgumentType], the method definition in pyAv is wrong
-                new_pkt.pts = packet.pkt.pts - self._out_first_pts
-                new_pkt.dts = packet.pkt.dts - self._out_first_dts
+                new_pkt.pts = self._out_last_pts = packet.pkt.pts - self._out_first_pts
+                new_pkt.dts = None
                 new_pkt.stream = self._out_stream
                 new_pkt.duration = packet.pkt.duration
                 new_pkt.time_base = packet.pkt.time_base
-                self._output.mux(new_pkt)
+                try:
+                    self._output.mux(new_pkt)
+                except Exception:
+                    _LOGGER.exception("Error muxing packet")
 
     def _finish(self, packets: list[_TimePacket]) -> None:
         if self._output is not None:
@@ -269,8 +299,8 @@ class PacketRecorder(PacketHandler, Updatable):
 
     async def close(self) -> None:
         """Close the PacketRecorder."""
-        for name in self._records:
-            await self._records.pop(name).stop()
+        for rec in self._records.values():
+            await rec.stop()
         self._records.clear()
 
     def _get_lookback_packets(self, lookback: int) -> list[_TimePacket]:
@@ -285,7 +315,10 @@ class PacketRecorder(PacketHandler, Updatable):
     async def process(self, packet: _TimePacket) -> None:
         """Process the packet."""
         # Cleanup
-        self._lookback_packets = self._get_lookback_packets(self._max_lookback)
+        if packet.is_first_keyframe:
+            self._lookback_packets.clear()
+        else:
+            self._lookback_packets = self._get_lookback_packets(self._max_lookback)
 
         # Process packet
         self._lookback_packets.append(packet)

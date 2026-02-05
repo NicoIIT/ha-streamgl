@@ -74,8 +74,9 @@ class Gallery(LocalSource):
                     if len(f.name) < 10 or (file_type := self.EXT_MAP.get(f.name[7:], None)) is None:
                         continue
                     tm = f"{f.name[0:6]}"
+                    full_date = datetime.strptime(f"{str_date}T{tm}", "%y%m%dT%H%M%S").isoformat()  # noqa: DTZ007
                     if tm not in gallery:
-                        gallery[tm] = {"name": f.name, "time": tm, "date": str_date, "trigger": trig_path.name, "streamgl": streamgl, "urls": {}}
+                        gallery[tm] = {"name": f.name, "time": tm, "date": full_date, "trigger": trig_path.name, "streamgl": streamgl, "urls": {}}
                     gallery[tm]["urls"][file_type] = f
             return [gallery[x] for x in sorted(gallery.keys())]
 
@@ -84,6 +85,22 @@ class Gallery(LocalSource):
             for x, f in data["urls"].items():
                 data["urls"][x] = await self.get_media_url(f)
         return fl
+
+    async def async_del_media(self, streamgl: str, trigger: str, adate: datetime) -> bool:
+        """Delete the media corresponding to the stream / trigger at the given date."""
+
+        def _delete_files() -> bool:
+            file_found = False
+            fol_path = self._base_path.joinpath(streamgl, trigger, adate.strftime("%y%m%d"))
+            tm = adate.strftime("%H%M%S")
+            for file_path in [fol_path.joinpath(f"{tm}-{ext}") for ext in self.EXT_MAP]:
+                if file_path.exists():
+                    file_found |= True
+                    file_path.unlink()
+                    _LOGGER.debug(f"File deleted: {file_path}")
+            return file_found
+
+        return await self.hass.loop.run_in_executor(None, _delete_files)
 
     async def get_stream_gallery_sizes(self, streamgl: str, st: float | None, et: float | None) -> dict[str, int]:
         """Get the size of the gallery for a given stream, splitted by trigger, filtered by date folder creation start_time / end_time."""

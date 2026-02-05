@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Final
@@ -12,6 +13,7 @@ from homeassistant.components.websocket_api import async_register_command, conne
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_OPTIONS, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt
@@ -39,11 +41,15 @@ CONF_TRIGGER: Final = "trigger"
 CONF_DURATION: Final = "duration"
 CONF_LOOKBACK: Final = "lookback"
 
+VALID_GALLERY = cv.matches_regex(r"^[\da-zA-Z_/]*$")
+VALID_STREAM_NAME = cv.matches_regex(r"^[\da-z\-_]*$")
+VALID_TRIGGER = cv.slug
+
 CONFIG_SCHEMA = vol.Schema(
     {
         DOMAIN: vol.Schema(
             {
-                vol.Optional(CONF_GALLERY, default="medias"): vol.Coerce(str),
+                vol.Optional(CONF_GALLERY, default="medias"): VALID_GALLERY,
             }
         )
     },
@@ -52,24 +58,24 @@ CONFIG_SCHEMA = vol.Schema(
 
 START_RECORDING_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_STREAMGL): vol.Coerce(str),
-        vol.Optional(CONF_TRIGGER, default="manual"): vol.Coerce(str),
-        vol.Optional(CONF_DURATION, default=30): vol.Coerce(int),
-        vol.Optional(CONF_LOOKBACK, default=0): vol.Coerce(int),
+        vol.Required(CONF_STREAMGL): VALID_STREAM_NAME,
+        vol.Optional(CONF_TRIGGER, default="manual"): VALID_TRIGGER,
+        vol.Optional(CONF_DURATION, default=30): cv.positive_int,
+        vol.Optional(CONF_LOOKBACK, default=0): cv.positive_int,
     }
 )
 
 STOP_RECORDING_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_STREAMGL): vol.Coerce(str),
-        vol.Optional(CONF_TRIGGER): vol.Coerce(str),
+        vol.Required(CONF_STREAMGL): VALID_STREAM_NAME,
+        vol.Optional(CONF_TRIGGER, default="manual"): VALID_TRIGGER,
     }
 )
 
 SNAPSHOT_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_STREAMGL): vol.Coerce(str),
-        vol.Optional(CONF_TRIGGER): vol.Coerce(str),
+        vol.Required(CONF_STREAMGL): VALID_STREAM_NAME,
+        vol.Optional(CONF_TRIGGER, default="manual"): VALID_TRIGGER,
     }
 )
 
@@ -136,6 +142,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     dom_data[CONF_GALLERY] = gallery = Gallery(hass, dom_data[CONF_OPTIONS][CONF_GALLERY])
     await gallery.register()
     async_register_command(hass, websocket_gallery_list)
+    async_register_command(hass, websocket_gallery_delete)
 
     # Custom Gallery Front End Card, best effort
     try:
@@ -148,14 +155,20 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     # streamgl start record / stop record / snapshot services
     async def start_recording(call: ServiceCall) -> ServiceResponse | None:
         streamer = await async_get_streamer(hass, call.data[CONF_STREAMGL])
+        await asyncio.wait_for(streamer.wait_for_streaming(), 30.0)
         trigger = call.data[CONF_TRIGGER]
         now = dt.as_local(dt.utcnow())
         tnb_path = await gallery.async_create_media_path(streamer.name, trigger, now, "tnb")
         await streamer.snapper.take(tnb_path, 320)
-        record_path = await gallery.async_create_media_path(streamer.name, trigger, now, "clip")
-        await streamer.recorder.start_recording(trigger, record_path, call.data[CONF_LOOKBACK], call.data[CONF_DURATION])
+        clip_path = await gallery.async_create_media_path(streamer.name, trigger, now, "clip")
+        await streamer.recorder.start_recording(trigger, clip_path, call.data[CONF_LOOKBACK], call.data[CONF_DURATION])
         if call.return_response:
-            return {"tnb": await gallery.get_media_url(tnb_path), "clip": await gallery.get_media_url(record_path)}
+            return {
+                "tnb": await gallery.get_media_url(tnb_path),
+                "clip": await gallery.get_media_url(clip_path),
+                "date": now.isoformat(sep=" ", timespec="seconds"),
+                "file": clip_path.as_posix(),
+            }
         return None
 
     async def stop_recording(call: ServiceCall) -> None:
@@ -164,6 +177,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
     async def snapshot(call: ServiceCall) -> ServiceResponse | None:
         streamer = await async_get_streamer(hass, call.data[CONF_STREAMGL])
+        await asyncio.wait_for(streamer.wait_for_streaming(), 30.0)
         trigger = call.data[CONF_TRIGGER]
         now = dt.as_local(dt.utcnow())
         tnb_path = await gallery.async_create_media_path(streamer.name, trigger, now, "tnb")
@@ -171,7 +185,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         snap_path = await gallery.async_create_media_path(streamer.name, trigger, now, "snap")
         await streamer.snapper.take(snap_path)
         if call.return_response:
-            return {"tnb": await gallery.get_media_url(tnb_path), "snap": await gallery.get_media_url(snap_path)}
+            return {
+                "tnb": await gallery.get_media_url(tnb_path),
+                "snap": await gallery.get_media_url(snap_path),
+                "date": now.isoformat(sep=" ", timespec="seconds"),
+                "file": snap_path.as_posix(),
+            }
         return None
 
     hass.services.async_register(DOMAIN, START_RECORDING_SERVICE, start_recording, START_RECORDING_SCHEMA, SupportsResponse.OPTIONAL)
@@ -229,9 +248,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 @decorators.websocket_command(
     {
         vol.Required("type"): "streamgl/gallery_list",
-        vol.Required("streamgl"): str,
+        vol.Required("streamgl"): VALID_STREAM_NAME,
         vol.Optional("date"): str,
-        vol.Optional("triggers", default=[]): list[str],
+        vol.Optional("triggers", default=[]): vol.All(cv.ensure_list, [VALID_TRIGGER]),
     }
 )
 @decorators.async_response
@@ -252,7 +271,7 @@ async def websocket_gallery_list(hass: HomeAssistant, connection: connection.Act
         if "date" in msg:
             adate = dt.parse_datetime(msg["date"])
             if adate is None:
-                error("resolve_strinvalid_dateeamgl_failed", f"Invalid date: {msg['date']}")
+                error("invalid_date", f"Invalid date: {msg['date']}")
                 return
         else:
             adate = dt.utcnow()
@@ -264,7 +283,43 @@ async def websocket_gallery_list(hass: HomeAssistant, connection: connection.Act
         error("unknown_exception", str(err))
         return
 
-    connection.send_result(
-        msg["id"],
-        medias,
-    )
+    connection.send_result(msg["id"], medias)
+
+
+@decorators.websocket_command(
+    {
+        vol.Required("type"): "streamgl/gallery_delete",
+        vol.Required("streamgl"): VALID_STREAM_NAME,
+        vol.Required("date"): str,
+        vol.Required("trigger"): VALID_TRIGGER,
+    }
+)
+@decorators.async_response
+async def websocket_gallery_delete(hass: HomeAssistant, connection: connection.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Delete a streamgl gallery item."""
+
+    def error(atype: str, amsg: str) -> None:
+        connection.send_error(msg["id"], atype, amsg)
+
+    try:
+        streamer = await async_get_streamer(hass, msg["streamgl"])
+    except vol.Invalid as err:
+        error("resolve_streamgl_failed", str(err))
+        return
+
+    try:
+        adate = dt.parse_datetime(msg["date"])
+        if adate is None:
+            error("invalid_date", f"Invalid date: {msg['date']}")
+            return
+
+        gallery = await async_get_gallery(hass)
+        if not await gallery.async_del_media(streamer.name, msg["trigger"], adate):
+            error("no_corresponding_media", "No media corresponding to the criterias.")
+            return
+
+    except Exception as err:
+        error("unknown_exception", str(err))
+        return
+
+    connection.send_result(msg["id"], {})

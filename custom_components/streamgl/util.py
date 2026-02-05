@@ -44,6 +44,7 @@ class WebRtcGo2rtcClient:
             self._base_url = URL(entry)
 
         self._need_avail_check: bool = True
+        self._restart_on_going = False
 
     async def _request(
         self,
@@ -96,16 +97,29 @@ class WebRtcGo2rtcClient:
 
     async def restart(self) -> None:
         """Restart the daemon / reload the webrtc integration."""
-        # Restart the go2rtc server
-        # BUT if there was a ghost one from a previously wrongly cleaned webrtc, it will just exit
+        if self._restart_on_going:
+            return  # Only one restart at a time
+        self._restart_on_going = True
         self._need_avail_check = True
-        await self._request("POST", "api/restart", skip_avail_check=True)
-        await asyncio.sleep(2.0)
-
-        # Reload webrtc integration to restart a new binary if needed
-        entries = self.hass.config_entries.async_entries(WEBRTC_DOMAIN)
-        await self.hass.config_entries.async_reload(entries[0].entry_id)
-        await asyncio.sleep(2.0)
+        try:
+            # Restart the go2rtc server using the API
+            # BUT if there was a ghost one from a previously wrongly cleaned webrtc, it will just exit
+            _LOGGER.debug("Trying to restart Go2Rtc server using API.")
+            await self._request("POST", "api/restart", skip_avail_check=True)
+            await self._request("POST", "api")
+            _LOGGER.info("Go2Rtc server restarted OK using API.")
+        except Exception as err:
+            _LOGGER.warning("Failed to restart Go2Rtc using api service: %s", err)
+            # Try to reload webrtc integration to restart a new binary if needed
+            try:
+                _LOGGER.debug("Trying to restart Go2Rtc server by WebRtc integration reload.")
+                entries = self.hass.config_entries.async_entries(WEBRTC_DOMAIN)
+                await self.hass.config_entries.async_reload(entries[0].entry_id)
+                await self._request("POST", "api")
+                _LOGGER.info("Go2Rtc server restarted OK by WebRtc integration reload.")
+            except Exception as err:
+                _LOGGER.warning("Failed to restart Go2Rtc using WebRtc integration reload: %s", err)
+        self._restart_on_going = False
 
     async def streams_list(self) -> dict[str, Any]:
         """Get the list of defined streams."""

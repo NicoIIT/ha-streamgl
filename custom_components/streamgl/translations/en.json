@@ -58,9 +58,11 @@
         },
         "error": {
             "already_exists": "A go2rtc stream with the same name already exists.",
-            "invalid_id": "A stream with the same ID already exist, or it contains invalid characters (only letters / digits / '-'/ '_' allowed)",
-            "stream_failed": "Unable to connect to the stream within 20 seconds, check error logs for more info.",
-            "invalid_options": "FFmpeg options for go2rtc 'ffmpeg:' stream type must be referenced directly in '#raw: ', see go2rtc doc."
+            "invalid_id": "The StreaMGL ID contains invalid characters (only letters / digits / '-' / '_' allowed)",
+            "exist_id": "A StreaMGL with the same ID already exists",
+            "invalid_exec_echo": "'exec:' and 'echo:' cannot be used for security reasons",
+            "invalid_options": "FFmpeg options for go2rtc 'ffmpeg:' stream type must be referenced directly in '#raw: ', see go2rtc doc.",
+            "stream_failed": "Unable to connect to the stream within 20 seconds, check error logs for more info."
         }
     },
     "selector": {

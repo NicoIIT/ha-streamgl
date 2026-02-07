@@ -1,15 +1,17 @@
 {
   "domain": "streamgl",
   "name": "StreaMGL: Stream, Motion and Gallery",
+  "after_dependencies": [
+    "camera",
+    "webrtc"
+  ],
   "codeowners": [
     "@NicoIIT"
   ],
   "config_flow": true,
   "dependencies": [
-    "camera",
     "http",
-    "lovelace",
-    "webrtc"
+    "lovelace"
   ],
   "documentation": "https://github.com/NicoIIT/ha-streamgl",
   "integration_type": "device",

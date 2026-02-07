@@ -102,9 +102,9 @@ class StreaMGL(Streamer):
         if self.conf[CONF_CREATE_GO2RTC]:
             via = f"go2rtc: {DOMAIN}.{self.conf[CONF_DEVICE_ID]} - {get_url_redacted(self.conf[CONF_SOURCE])}"
         elif self.conf[CONF_TYPE] == CONF_TYPE_GO2RTC:
-            via = f"go2rtc: {self.conf[CONF_DEVICE_ID]}"
+            via = f"go2rtc: {self.conf[CONF_SOURCE]}"
         else:
-            via = get_url_redacted(self.conf[CONF_SOURCE])
+            via = f"direct: {get_url_redacted(self.conf[CONF_SOURCE])}"
         return DeviceInfo(identifiers={(DOMAIN, self.id)}, name=self.id, model=f"id: {self.conf[CONF_DEVICE_ID]}", manufacturer=via)
 
     async def _get_go2rtc_rtsp(self, go2rtc_name: str) -> tuple[str, dict[str, str]]:
@@ -126,7 +126,7 @@ class StreaMGL(Streamer):
         if self.conf[CONF_CREATE_GO2RTC]:
             return await self._get_go2rtc_rtsp(f"{DOMAIN}.{self.conf[CONF_DEVICE_ID]}")
         if self.conf[CONF_TYPE] == CONF_TYPE_GO2RTC:
-            return await self._get_go2rtc_rtsp(self.conf[CONF_DEVICE_ID])
+            return await self._get_go2rtc_rtsp(self.conf[CONF_SOURCE])
         return self.conf.get(CONF_SOURCE, ""), self.conf.get(CONF_OPTIONS, {})
 
     async def refresh_source(self) -> None:

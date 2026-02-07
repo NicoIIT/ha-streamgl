@@ -67,14 +67,25 @@ class StreaMGFlowHandler(ConfigFlow, domain=DOMAIN):
         ph = {"desc": ERROR_DESC.get(self._abort_reason, "Unknown")}
         return self.async_show_menu(step_id="abort_or_back", menu_options=["abort", "back"], description_placeholders=ph)
 
-    async def _is_valid_name(self, name: str) -> bool:
-        exist_names = [st.id for st in (await async_get_all_streams(self.hass)).values()]
-        return VALID_STREAM_NAME_RE.match(name) is not None and name not in exist_names
+    async def _is_valid_id(self, name: str) -> bool:
+        return VALID_STREAM_NAME_RE.match(name) is not None
+
+    async def _is_exist_name(self, name: str) -> bool:
+        return name not in [st.id for st in (await async_get_all_streams(self.hass)).values()]
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle a flow initiated by the user."""
         # Compute the potential streams that can be used from existing cameras and go2rtc streams, and default
-        streams = {"new_stream": {CONF_TYPE: CONF_TYPE_RAW, CONF_DEVICE_ID: "", CONF_SOURCE: "rtsp://", CONF_OPTIONS: CONF_DEFAULT_RTSP_OPTIONS}}
+        webrtc_available = is_webrtc_camera_installed(self.hass)
+        streams = {
+            "new_stream": {
+                CONF_TYPE: CONF_TYPE_RAW,
+                CONF_DEVICE_ID: "",
+                CONF_SOURCE: "rtsp://",
+                CONF_OPTIONS: CONF_DEFAULT_RTSP_OPTIONS,
+                CONF_CREATE_GO2RTC: webrtc_available,
+            }
+        }
         streams.update(
             {
                 name: {
@@ -82,17 +93,24 @@ class StreaMGFlowHandler(ConfigFlow, domain=DOMAIN):
                     CONF_DEVICE_ID: name.split(".")[-1],
                     CONF_SOURCE: await cam.stream_source(),
                     CONF_OPTIONS: cam.stream_options,
+                    CONF_CREATE_GO2RTC: webrtc_available,
                 }
                 for name, cam in get_cameras(self.hass).items()
             }
         )
-        if is_webrtc_camera_installed(self.hass):
+        if webrtc_available:
             grest = await get_server(self.hass)
             streams.update(
                 {
-                    f"go2rtc.{name}": {CONF_TYPE: CONF_TYPE_GO2RTC, CONF_DEVICE_ID: name, CONF_SOURCE: name, CONF_OPTIONS: ""}
+                    f"go2rtc.{name}": {
+                        CONF_TYPE: CONF_TYPE_GO2RTC,
+                        CONF_DEVICE_ID: name,
+                        CONF_SOURCE: name,
+                        CONF_OPTIONS: {},
+                        CONF_CREATE_GO2RTC: False,
+                    }
                     for name in await grest.streams_list()
-                    if await self._is_valid_name(name)
+                    if await self._is_valid_id(name)
                 }
             )
         _LOGGER.debug(streams)
@@ -106,8 +124,6 @@ class StreaMGFlowHandler(ConfigFlow, domain=DOMAIN):
         keys_selector = selector.SelectSelectorConfig(translation_key="stream_key", options=list(streams.keys()))
         data_schema = vol.Schema({vol.Required("stream_key"): selector.SelectSelector(keys_selector)})
         return self.async_show_form(step_id="user", data_schema=data_schema, last_step=False)
-
-        # //return self.async_show_menu(step_id="user", menu_options=["add_rtsp", "new_go2rtc", "exist_go2rtc"])
 
     async def _validate_stream(self, conf: dict[str, Any]) -> dict[str, Any] | None:
         """Create a Stream and try to get info, with best effort closure."""
@@ -135,32 +151,36 @@ class StreaMGFlowHandler(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             self._data[CONF_STREAM].update(user_input)
-            if await self._is_valid_name(user_input[CONF_DEVICE_ID]):
-                if (
-                    user_input[CONF_SOURCE].startswith("ffmpeg:")
-                    and user_input[CONF_CREATE_GO2RTC]
-                    and user_input[CONF_OPTIONS]
-                    and user_input[CONF_OPTIONS] != CONF_DEFAULT_RTSP_OPTIONS
-                ):
-                    errors[CONF_OPTIONS] = "invalid_options"
-                elif (info := await self._validate_stream(self._data[CONF_STREAM].copy())) is None:
+            conf = self._data[CONF_STREAM]
+            conf[CONF_SOURCE] = conf[CONF_SOURCE].strip()
+            if not await self._is_valid_id(conf[CONF_DEVICE_ID]):
+                errors[CONF_DEVICE_ID] = "invalid_id"
+            elif not await self._is_exist_name(conf[CONF_DEVICE_ID]):
+                errors[CONF_DEVICE_ID] = "exist_id"
+            if conf[CONF_SOURCE].startswith("exec:") or conf[CONF_SOURCE].startswith("echo:"):
+                errors[CONF_SOURCE] = "invalid_exec_echo"
+            if (
+                conf[CONF_SOURCE].startswith("ffmpeg:")
+                and conf[CONF_CREATE_GO2RTC]
+                and conf[CONF_OPTIONS]
+                and conf[CONF_OPTIONS] != CONF_DEFAULT_RTSP_OPTIONS
+            ):
+                errors[CONF_OPTIONS] = "invalid_options"
+            if not errors:
+                if (info := await self._validate_stream(self._data[CONF_STREAM].copy())) is None:
                     errors["base"] = "stream_failed"
                 else:
                     return await self.async_step_stream_sumup({"info": info})
-            else:
-                errors[CONF_DEVICE_ID] = "invalid_id"
 
-        data_schema = vol.Schema({vol.Required(CONF_DEVICE_ID, default=self._data[CONF_STREAM].get(CONF_DEVICE_ID, "")): str})
+        schema = vol.Schema({vol.Required(CONF_DEVICE_ID, default=self._data[CONF_STREAM].get(CONF_DEVICE_ID, "")): str})
         if self._data[CONF_STREAM][CONF_TYPE] == CONF_TYPE_RAW:
-            data_schema = data_schema.extend(
-                {
-                    vol.Required(CONF_SOURCE, default=self._data[CONF_STREAM].get(CONF_SOURCE, "")): str,
-                    vol.Optional(CONF_CREATE_GO2RTC, default=True): bool,
-                    vol.Optional(CONF_OPTIONS, default=self._data[CONF_STREAM].get(CONF_OPTIONS, "")): selector.ObjectSelector(),
-                }
-            )
+            schema = schema.extend({vol.Required(CONF_SOURCE, default=self._data[CONF_STREAM].get(CONF_SOURCE, "")): str})
+        if is_webrtc_camera_installed(self.hass):
+            schema = schema.extend({vol.Optional(CONF_CREATE_GO2RTC, default=True): bool})
+        if self._data[CONF_STREAM][CONF_TYPE] == CONF_TYPE_RAW:
+            schema = schema.extend({vol.Optional(CONF_OPTIONS, default=self._data[CONF_STREAM].get(CONF_OPTIONS, "")): selector.ObjectSelector()})
 
-        return self.async_show_form(step_id="stream_options", data_schema=data_schema, errors=errors, last_step=False)
+        return self.async_show_form(step_id="stream_options", data_schema=schema, errors=errors, last_step=False)
 
     async def async_step_stream_sumup(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Sum-up the stream params."""

@@ -22,20 +22,24 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+WEBRTC_DOMAIN = "webrtc"
 try:
     # webrtc may not be included
     from custom_components.webrtc.utils import Server
 except ImportError:
-    _LOGGER.debug("webrtc not available")
+    _LOGGER.info("webrtc not available")
+    WEBRTC_DOMAIN = None
 
-WEBRTC_DOMAIN = "webrtc"
 
 logging.getLogger("aiohttp").setLevel(logging.DEBUG)
 
 
 def is_webrtc_camera_installed(hass: HomeAssistant) -> bool:
     """Check if the WebRTC Camera component is installed."""
-    return len(hass.config_entries.async_entries(WEBRTC_DOMAIN)) > 0
+    if WEBRTC_DOMAIN is None:
+        return False
+    webrtc_entries = hass.config_entries.async_entries(WEBRTC_DOMAIN, False, False)
+    return len(webrtc_entries) > 0
 
 
 def get_url_redacted(url: str) -> str:
@@ -56,12 +60,18 @@ def get_cameras(hass: HomeAssistant) -> dict[str, Camera]:
     return cam_dict
 
 
+class UseNotAvailableWebrtcError(Exception):
+    """WebRTC Camera not available."""
+
+
 class WebRtcGo2rtcClient:
     """Client for the webrtc go2rtc referenced server."""
 
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize Client."""
         self.hass = hass
+        if WEBRTC_DOMAIN is None:
+            raise UseNotAvailableWebrtcError
         entry = self.hass.data[WEBRTC_DOMAIN]
         self._server: Server | None = None
         if isinstance(entry, Server):

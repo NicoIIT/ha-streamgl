@@ -9,9 +9,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import StreaMGL, async_get_all_streams, async_get_gallery
 from .const import DOMAIN
-from .gallery import Gallery
+from .gallery import Gallery, async_get_gallery
+from .util import StreaMGL, async_get_all_streams
 
 _LOGGER = logging.getLogger(__name__)
 

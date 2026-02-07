@@ -8,14 +8,24 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar, Final
 
+import voluptuous as vol
 from homeassistant.components.media_player.browse_media import async_process_play_media_url
 from homeassistant.components.media_source.local_source import LocalMediaView, LocalSource
 from homeassistant.components.media_source.models import MediaSourceItem
+from homeassistant.components.websocket_api import async_register_command, connection, decorators
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
+from homeassistant.util import dt
 
-from .const import DOMAIN
+from .const import CONF_GALLERY, CONF_STREAM_NAME_REGEX, DOMAIN
+from .util import async_get_streamer
 
 _LOGGER = logging.getLogger(__name__)
+
+
+async def async_get_gallery(hass: HomeAssistant) -> Gallery:
+    """Help get the Gallery Source from hass data."""
+    return hass.data[DOMAIN][CONF_GALLERY]
 
 
 async def create_path(hass: HomeAssistant, path: Path) -> None:
@@ -44,10 +54,12 @@ class Gallery(LocalSource):
         super().__init__(hass, DOMAIN, "StreaMGL", {self.GALLERY_DIR: self._base_path.as_posix()}, f"/{DOMAIN}")
 
     async def register(self) -> None:
-        """Create the Gallery path and Register the Gallery Media View."""
+        """Create the Gallery path and Register the Gallery Media View and web services."""
         await create_path(self.hass, self._base_path)
         _LOGGER.debug(f"Gallery location: {self._base_path}")
         self.hass.http.register_view(LocalMediaView(self.hass, self))
+        async_register_command(self.hass, websocket_gallery_list)
+        async_register_command(self.hass, websocket_gallery_delete)
 
     async def async_create_media_path(self, streamgl: str, trig: str, adate: datetime, atype: str) -> Path:
         """Get the full Path where to store the media and create its parent dir if it does not exist yet."""
@@ -117,3 +129,83 @@ class Gallery(LocalSource):
             return sizes
 
         return await self.hass.loop.run_in_executor(None, _get_sizes)
+
+
+@decorators.websocket_command(
+    {
+        vol.Required("type"): "streamgl/gallery_list",
+        vol.Required("streamgl"): cv.matches_regex(CONF_STREAM_NAME_REGEX),
+        vol.Optional("date"): str,
+        vol.Optional("triggers", default=[]): vol.All(cv.ensure_list, [cv.slug]),
+    }
+)
+@decorators.async_response
+async def websocket_gallery_list(hass: HomeAssistant, connection: connection.ActiveConnection, msg: dict[str, Any]) -> None:
+    """List elements of the streamgl gallery for the given date and types."""
+
+    def error(atype: str, amsg: str) -> None:
+        connection.send_error(msg["id"], atype, amsg)
+
+    try:
+        streamer = await async_get_streamer(hass, msg["streamgl"])
+    except vol.Invalid as err:
+        error("resolve_streamgl_failed", str(err))
+        return
+
+    try:
+        trigs: list[str] = msg.get("triggers", [])
+        if "date" in msg:
+            adate = dt.parse_datetime(msg["date"])
+            if adate is None:
+                error("invalid_date", f"Invalid date: {msg['date']}")
+                return
+        else:
+            adate = dt.utcnow()
+
+        gallery = await async_get_gallery(hass)
+        medias = await gallery.async_get_medias(streamer.id, trigs, dt.as_local(adate))
+
+    except Exception as err:
+        error("unknown_exception", str(err))
+        return
+
+    connection.send_result(msg["id"], medias)
+
+
+@decorators.websocket_command(
+    {
+        vol.Required("type"): "streamgl/gallery_delete",
+        vol.Required("streamgl"): cv.matches_regex(CONF_STREAM_NAME_REGEX),
+        vol.Required("date"): str,
+        vol.Required("trigger"): cv.slug,
+    }
+)
+@decorators.async_response
+async def websocket_gallery_delete(hass: HomeAssistant, connection: connection.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Delete a streamgl gallery item."""
+
+    def error(atype: str, amsg: str) -> None:
+        connection.send_error(msg["id"], atype, amsg)
+
+    try:
+        streamer = await async_get_streamer(hass, msg["streamgl"])
+    except vol.Invalid as err:
+        error("resolve_streamgl_failed", str(err))
+        return
+
+    try:
+        adate = dt.parse_datetime(msg["date"])
+        if adate is None:
+            error("invalid_date", f"Invalid date: {msg['date']}")
+            return
+
+        gallery = await async_get_gallery(hass)
+        if not await gallery.async_del_media(streamer.id, msg["trigger"], adate):
+            error("no_corresponding_media", "No media corresponding to the criterias.")
+            return
+
+    except Exception as err:
+        error("unknown_exception", str(err))
+        return
+
+    connection.send_result(msg["id"], {})

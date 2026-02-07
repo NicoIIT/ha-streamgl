@@ -18,3 +18,5 @@ CONF_TYPE_GO2RTC: Final = "go2rtc"
 CONF_DEFAULT_RTSP_OPTIONS = {"rtsp_transport": "tcp"}
 
 CONF_STREAM_NAME_REGEX = r"^[\da-z\-_]*$"
+
+CONF_GALLERY: Final = "gallery"

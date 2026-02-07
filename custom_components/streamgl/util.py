@@ -2,23 +2,26 @@
 
 import asyncio
 import logging
-from collections.abc import Callable, Coroutine
 from typing import Any, Literal, cast
 from urllib.parse import SplitResult, urlsplit
 
+import voluptuous as vol
 from aiohttp import ClientError, ClientResponse, ClientTimeout
 from homeassistant.components.camera import Camera
 from homeassistant.components.camera.const import DOMAIN as CAMERA_DOMAIN
 from homeassistant.components.lovelace.const import DOMAIN as LOVELACE_DOMAIN
 from homeassistant.components.lovelace.resources import ResourceStorageCollection
+from homeassistant.const import CONF_DEVICE_ID, CONF_OPTIONS, CONF_SOURCE, CONF_TYPE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import DATA_DOMAIN_PLATFORM_ENTITIES
 from homeassistant.helpers.singleton import singleton
 from homeassistant.util.hass_dict import HassKey
 from yarl import URL
 
-from .const import DOMAIN
+from .const import CONF_CREATE_GO2RTC, CONF_DEFAULT_RTSP_OPTIONS, CONF_STREAM, CONF_TYPE_GO2RTC, DOMAIN
+from .stream import PacketFramer, PacketRecorder, SnapshotHandler, Streamer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +61,75 @@ def get_cameras(hass: HomeAssistant) -> dict[str, Camera]:
             for name, camera in entities.items():
                 cam_dict[name] = cast("Camera", camera)
     return cam_dict
+
+
+class StreaMGL(Streamer):
+    """Wrapper StreaMGL including Recorder, Snapper and support for go2rtc and rtsp source."""
+
+    def __init__(self, hass: HomeAssistant, conf: dict[str, Any], max_inactivity_seconds: int = 15, max_lookback: int = 10) -> None:
+        super().__init__(hass, conf[CONF_DEVICE_ID], max_inactivity_seconds)
+        self.conf = conf
+        self.recorder: PacketRecorder = PacketRecorder(max_lookback)
+        self.add_packet_handler(self.recorder)
+        self.framer: PacketFramer = PacketFramer()
+        self.add_packet_handler(self.framer)
+        self.snapper: SnapshotHandler = SnapshotHandler()
+        self.framer.add_frame_handler(self.snapper)
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return the device info."""
+        via = None
+        if self.conf[CONF_CREATE_GO2RTC]:
+            via = f"go2rtc: {DOMAIN}.{self.conf[CONF_DEVICE_ID]} - {get_url_redacted(self.conf[CONF_SOURCE])}"
+        elif self.conf[CONF_TYPE] == CONF_TYPE_GO2RTC:
+            via = f"go2rtc: {self.conf[CONF_SOURCE]}"
+        else:
+            via = f"direct: {get_url_redacted(self.conf[CONF_SOURCE])}"
+        return DeviceInfo(identifiers={(DOMAIN, self.id)}, name=self.id, model=f"id: {self.conf[CONF_DEVICE_ID]}", manufacturer=via)
+
+    async def _get_go2rtc_rtsp(self, go2rtc_name: str) -> tuple[str, dict[str, str]]:
+        grest = await get_server(self.hass)
+        info = await grest.info()
+        return f"rtsp://{info['host'].split(':')[0]}{info['rtsp']['listen']}/{go2rtc_name}", CONF_DEFAULT_RTSP_OPTIONS
+
+    async def get_go2rtc_source(self) -> str | None:
+        """Get the generated source to be added to go2rtc if needed."""
+        if not self.conf[CONF_CREATE_GO2RTC]:
+            return None
+        if self.conf[CONF_OPTIONS] and self.conf[CONF_OPTIONS] != CONF_DEFAULT_RTSP_OPTIONS:
+            raw_options = " ".join([f"-{nm} {val}" for nm, val in self.conf[CONF_OPTIONS].items()])
+            return f"ffmpeg:{self.conf[CONF_SOURCE]}#raw={raw_options}"
+        return self.conf[CONF_SOURCE]
+
+    async def async_get_src(self) -> tuple[str, dict[str, str]]:
+        """Get the tuple src / src_options."""
+        if self.conf[CONF_CREATE_GO2RTC]:
+            return await self._get_go2rtc_rtsp(f"{DOMAIN}.{self.conf[CONF_DEVICE_ID]}")
+        if self.conf[CONF_TYPE] == CONF_TYPE_GO2RTC:
+            return await self._get_go2rtc_rtsp(self.conf[CONF_SOURCE])
+        return self.conf.get(CONF_SOURCE, ""), self.conf.get(CONF_OPTIONS, {})
+
+    async def refresh_source(self) -> None:
+        """Refresh the webrtc server if needed."""
+        if self.conf[CONF_TYPE] == CONF_TYPE_GO2RTC or self.conf[CONF_CREATE_GO2RTC]:
+            grest = await get_server(self.hass)
+            await grest.restart()
+
+
+async def async_get_all_streams(hass: HomeAssistant) -> dict[str, StreaMGL]:
+    """Help get all streams stored in hass data."""
+    return hass.data[DOMAIN][CONF_STREAM] if DOMAIN in hass.data and CONF_STREAM in hass.data[DOMAIN] else {}
+
+
+async def async_get_streamer(hass: HomeAssistant, device_id: str) -> StreaMGL:
+    """Resolve streamer for services."""
+    all_streams = (await async_get_all_streams(hass)).values()
+    streamers = [s for s in all_streams if s.id == device_id]
+    if not streamers:
+        msg = f"Invalid streamgl {device_id}"
+        raise vol.Invalid(msg)
+    return streamers[0]
 
 
 class UseNotAvailableWebrtcError(Exception):
@@ -229,19 +301,3 @@ async def async_register_custom_card(hass: HomeAssistant, name: str) -> None:
     else:
         _LOGGER.debug(f"Adding Lovelace resource: {url2}")
         await resources.async_create_item({"res_type": "module", "url": url2})
-
-
-class Updatable:
-    """Define an updatable class registering callbacks to be called on update."""
-
-    def __init__(self) -> None:
-        self._update_clbks: list[Callable[[], Coroutine]] = []
-
-    def add_on_update(self, callback: Callable[[], Coroutine]) -> None:
-        """Register the update callback."""
-        self._update_clbks.append(callback)
-
-    async def update(self) -> None:
-        """To be called by children on update."""
-        for clbk in self._update_clbks:
-            await clbk()

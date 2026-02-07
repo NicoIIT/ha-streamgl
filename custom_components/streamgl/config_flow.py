@@ -175,9 +175,8 @@ class StreaMGFlowHandler(ConfigFlow, domain=DOMAIN):
         schema = vol.Schema({vol.Required(CONF_DEVICE_ID, default=self._data[CONF_STREAM].get(CONF_DEVICE_ID, "")): str})
         if self._data[CONF_STREAM][CONF_TYPE] == CONF_TYPE_RAW:
             schema = schema.extend({vol.Required(CONF_SOURCE, default=self._data[CONF_STREAM].get(CONF_SOURCE, "")): str})
-        if is_webrtc_camera_installed(self.hass):
-            schema = schema.extend({vol.Optional(CONF_CREATE_GO2RTC, default=True): bool})
-        if self._data[CONF_STREAM][CONF_TYPE] == CONF_TYPE_RAW:
+            if is_webrtc_camera_installed(self.hass):
+                schema = schema.extend({vol.Optional(CONF_CREATE_GO2RTC, default=self._data[CONF_STREAM].get(CONF_CREATE_GO2RTC, False)): bool})
             schema = schema.extend({vol.Optional(CONF_OPTIONS, default=self._data[CONF_STREAM].get(CONF_OPTIONS, "")): selector.ObjectSelector()})
 
         return self.async_show_form(step_id="stream_options", data_schema=schema, errors=errors, last_step=False)

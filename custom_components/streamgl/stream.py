@@ -3,7 +3,7 @@
 import asyncio
 import datetime
 import logging
-from collections.abc import MutableMapping
+from collections.abc import Callable, Coroutine, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -15,8 +15,6 @@ import av.stream
 import numpy as np
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 from homeassistant.helpers.event import async_call_later
-
-from .util import Updatable
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,6 +29,22 @@ class _TimePacket:
     end: datetime.datetime
     pkt: av.Packet
     is_first_keyframe: bool
+
+
+class Updatable:
+    """Define an updatable class registering callbacks to be called on update."""
+
+    def __init__(self) -> None:
+        self._update_clbks: list[Callable[[], Coroutine]] = []
+
+    def add_on_update(self, callback: Callable[[], Coroutine]) -> None:
+        """Register the update callback."""
+        self._update_clbks.append(callback)
+
+    async def update(self) -> None:
+        """To be called by children on update."""
+        for clbk in self._update_clbks:
+            await clbk()
 
 
 class Streamer(Updatable):

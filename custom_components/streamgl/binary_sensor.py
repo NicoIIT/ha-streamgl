@@ -23,7 +23,7 @@ class _BaseStreamerBinarySensor(BinarySensorEntity):
     def __init__(self, streamer: StreaMGL, key: str) -> None:
         self._streamer = streamer
         self._attr_device_info: DeviceInfo = streamer.device_info
-        self._attr_unique_id: str = f"{DOMAIN}_{streamer.name}_{key}"
+        self._attr_unique_id: str = f"{DOMAIN}_{streamer.id}_{key}"
         self._attr_translation_key: str = key
         self._attr_available = True
 
@@ -58,5 +58,5 @@ class StreamStateSensor(_BaseStreamerBinarySensor):
         self._streamer.add_on_update(self._update)
 
     async def _update(self) -> None:
-        self._attr_is_on = self._streamer.streaming
+        self._attr_is_on, self._attr_extra_state_attributes = self._streamer.info
         await self.async_update_ha_state(force_refresh=True)

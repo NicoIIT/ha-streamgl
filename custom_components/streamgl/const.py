@@ -8,8 +8,13 @@ DOMAIN: Final = "streamgl"
 PLATFORMS: Final = ["binary_sensor", "sensor"]
 
 CONF_STREAM: Final = "stream"
-CONF_GALLERY: Final = "gallery"
 CONF_ZONES: Final = "zones"
 CONF_ALERTS: Final = "alerts"
-CONF_G2_STREAM: Final = "g2_stream"
-CONF_G2_NAME: Final = "g2_name"
+CONF_CREATE_GO2RTC: Final = "create_go2rtc"
+
+CONF_TYPE_RAW: Final = "raw"
+CONF_TYPE_GO2RTC: Final = "go2rtc"
+
+CONF_DEFAULT_RTSP_OPTIONS = {"rtsp_transport": "tcp"}
+
+CONF_STREAM_NAME_REGEX = r"^[\da-z\-_]*$"

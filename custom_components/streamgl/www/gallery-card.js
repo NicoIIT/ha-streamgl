@@ -21,7 +21,6 @@ class StreaMGLGalleryCard extends LitElement {
     }
 
     render() {
-        const menuAlignment = (this.config.menu_alignment || "bottom").toLowerCase();
         return html`
         ${this.errors == undefined ? html`` :
                 this.errors.map((error) => {
@@ -144,7 +143,7 @@ class StreaMGLGalleryCard extends LitElement {
               <input class="date-input" id="dateinput" type="date" value="${this._getParsedDate()}" @change="${this._dateChanged}"/>
               <button class="btn-date" @click="${ev => this._selectNextDate()}"><ha-icon icon="mdi:chevron-double-right"/></button>
             </div>
-            <button class="btn-reload" @click="${ev => this._reloadResources(this._hass)}"><ha-icon icon="mdi:reload"/></button>
+            <button class="btn-reload" @click="${ev => this._loadResources()}"><ha-icon icon="mdi:reload"/></button>
           </div>
           <div class="resource-menu">
             ${this.res_msg.length !== 0 ?
@@ -163,7 +162,7 @@ class StreaMGLGalleryCard extends LitElement {
           ${this.currentResourceIndex != undefined ? html`<div class="resource-viewer" >
             <figure>
               ${this._isVideoMode() ?
-                    html`<video controls src="${this._currentResourceUrl()}#t=0.1" @canplay="${ev => ev.target.play()}"/>`
+                    html`<video controls src="${this._currentResourceUrl()}" @canplay="${ev => ev.target.play()}"/>`
                     : html`<img @click="${ev => this._toggleFullScreen(ev.target)}" src="${this._currentResourceUrl()}"/>`
                 }
             </figure>
@@ -228,7 +227,7 @@ class StreaMGLGalleryCard extends LitElement {
         });
 
         if (this._hass !== undefined)
-            this._loadResources(this._hass);
+            this._loadResources();
 
     }
 
@@ -242,10 +241,10 @@ class StreaMGLGalleryCard extends LitElement {
         let new_last_update = (this.update_sensor in hass.states) ? hass.states[this.update_sensor].last_updated : ""
         if (this.resources == null) {
             this.date_input = new Date();
-            this._loadResources(this._hass);
+            this._loadResources();
         }
         else if (this.gallery_last_update !== new_last_update) {
-            this._loadResources(this._hass);
+            this._loadResources();
         }
         this.gallery_last_update = new_last_update
     }
@@ -269,13 +268,13 @@ class StreaMGLGalleryCard extends LitElement {
     _selectNextDate() {
         this.date_input.setDate(this.date_input.getDate() + 1)
         this.shadowRoot.getElementById('dateinput').value = this._getParsedDate();
-        this._loadResources(this._hass);
+        this._loadResources();
     }
 
     _selectPrevDate() {
         this.date_input.setDate(this.date_input.getDate() - 1)
         this.shadowRoot.getElementById('dateinput').value = this._getParsedDate();
-        this._loadResources(this._hass);
+        this._loadResources();
     }
 
     _toggleFullScreen(iTarget) {
@@ -345,17 +344,19 @@ class StreaMGLGalleryCard extends LitElement {
 
     _currentResourceDelete() {
         const res = this._currentResource()
-        this._hass.callWS({
-            type: "streamgl/gallery_delete",
-            streamgl: res.streamgl,
-            trigger: res.trigger,
-            date: res.date,
-        }).then(result => {
-            this._loadResources(this._hass);
-        }, reject => {
-            console.error(reject)
-            this.requestUpdate();
-        });
+        if (confirm('Please confirm you want to delete this record.')) {
+            //action à faire pour la valeur true
+            this._hass.callWS({
+                type: "streamgl/gallery_delete",
+                streamgl: res.streamgl,
+                trigger: res.trigger,
+                date: res.date,
+            }).then(result => {
+                this._loadResources();
+            }, reject => {
+                alert('Deletion failed, check Home Assistant logs')
+            });
+        }
     }
 
     _resourceTitle(res, conf) {
@@ -371,21 +372,16 @@ class StreaMGLGalleryCard extends LitElement {
 
     _dateChanged(ev) {
         this.date_input = new Date(ev.target.value);
-        this._loadResources(this._hass);
+        this._loadResources();
     }
 
-    _reloadResources(hass) {
-        this.date_input = new Date();
-        this._loadResources(this._hass);
-    }
-
-    _loadResources(hass) {
+    _loadResources() {
         this.resources = [];
         this.currentResourceIndex = undefined;
         this.res_msg = "Loading...";
         this.requestUpdate();
 
-        hass.callWS({
+        this._hass.callWS({
             type: "streamgl/gallery_list",
             streamgl: this.config.streamgl,
             date: this.date_input.toISOString(),

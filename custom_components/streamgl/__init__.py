@@ -11,7 +11,7 @@ import voluptuous as vol
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.websocket_api import async_register_command, connection, decorators
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_OPTIONS, EVENT_HOMEASSISTANT_STOP
+from homeassistant.const import CONF_DEVICE_ID, CONF_OPTIONS, CONF_SOURCE, CONF_TYPE, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -19,16 +19,17 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt
 
 from .const import (
-    CONF_G2_NAME,
-    CONF_G2_STREAM,
-    CONF_GALLERY,
+    CONF_CREATE_GO2RTC,
+    CONF_DEFAULT_RTSP_OPTIONS,
     CONF_STREAM,
+    CONF_STREAM_NAME_REGEX,
+    CONF_TYPE_GO2RTC,
     DOMAIN,
     PLATFORMS,
 )
 from .gallery import Gallery
 from .stream import PacketFramer, PacketRecorder, SnapshotHandler, Streamer
-from .util import async_register_custom_card, get_server
+from .util import async_register_custom_card, get_server, get_url_redacted
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,9 +41,10 @@ CONF_STREAMGL: Final = "streamgl"
 CONF_TRIGGER: Final = "trigger"
 CONF_DURATION: Final = "duration"
 CONF_LOOKBACK: Final = "lookback"
+CONF_GALLERY: Final = "gallery"
 
 VALID_GALLERY = cv.matches_regex(r"^[\da-zA-Z_/]*$")
-VALID_STREAM_NAME = cv.matches_regex(r"^[\da-z\-_]*$")
+VALID_STREAM_NAME = cv.matches_regex(CONF_STREAM_NAME_REGEX)
 VALID_TRIGGER = cv.slug
 
 CONFIG_SCHEMA = vol.Schema(
@@ -83,8 +85,8 @@ SNAPSHOT_SCHEMA = vol.Schema(
 class StreaMGL(Streamer):
     """Wrapper StreaMGL including Recorder, Snapper and support for go2rtc and rtsp source."""
 
-    def __init__(self, hass: HomeAssistant, name: str, conf: dict[str, Any], max_inactivity_seconds: int = 15, max_lookback: int = 10) -> None:
-        super().__init__(hass, name, max_inactivity_seconds)
+    def __init__(self, hass: HomeAssistant, conf: dict[str, Any], max_inactivity_seconds: int = 15, max_lookback: int = 10) -> None:
+        super().__init__(hass, conf[CONF_DEVICE_ID], max_inactivity_seconds)
         self.conf = conf
         self.recorder: PacketRecorder = PacketRecorder(max_lookback)
         self.add_packet_handler(self.recorder)
@@ -96,18 +98,40 @@ class StreaMGL(Streamer):
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info."""
-        return DeviceInfo(identifiers={(DOMAIN, self.name)}, name=self.name)
+        via = None
+        if self.conf[CONF_CREATE_GO2RTC]:
+            via = f"go2rtc: {DOMAIN}.{self.conf[CONF_DEVICE_ID]} - {get_url_redacted(self.conf[CONF_SOURCE])}"
+        elif self.conf[CONF_TYPE] == CONF_TYPE_GO2RTC:
+            via = f"go2rtc: {self.conf[CONF_DEVICE_ID]}"
+        else:
+            via = get_url_redacted(self.conf[CONF_SOURCE])
+        return DeviceInfo(identifiers={(DOMAIN, self.id)}, name=self.id, model=f"id: {self.conf[CONF_DEVICE_ID]}", manufacturer=via)
+
+    async def _get_go2rtc_rtsp(self, go2rtc_name: str) -> tuple[str, dict[str, str]]:
+        grest = await get_server(self.hass)
+        info = await grest.info()
+        return f"rtsp://{info['host'].split(':')[0]}{info['rtsp']['listen']}/{go2rtc_name}", CONF_DEFAULT_RTSP_OPTIONS
+
+    async def get_go2rtc_source(self) -> str | None:
+        """Get the generated source to be added to go2rtc if needed."""
+        if not self.conf[CONF_CREATE_GO2RTC]:
+            return None
+        if self.conf[CONF_OPTIONS] and self.conf[CONF_OPTIONS] != CONF_DEFAULT_RTSP_OPTIONS:
+            raw_options = " ".join([f"-{nm} {val}" for nm, val in self.conf[CONF_OPTIONS].items()])
+            return f"ffmpeg:{self.conf[CONF_SOURCE]}#raw={raw_options}"
+        return self.conf[CONF_SOURCE]
 
     async def async_get_src(self) -> tuple[str, dict[str, str]]:
         """Get the tuple src / src_options."""
-        if (g2_name := self.conf.get(CONF_G2_NAME, "")) != "":
-            grest = await get_server(self.hass)
-            return await grest.get_rtsp_feed(f"{DOMAIN}.{g2_name}"), {"rtsp_transport": "tcp"}
-        return self.conf.get(CONF_STREAM, ""), {"rtsp_transport": "tcp"}
+        if self.conf[CONF_CREATE_GO2RTC]:
+            return await self._get_go2rtc_rtsp(f"{DOMAIN}.{self.conf[CONF_DEVICE_ID]}")
+        if self.conf[CONF_TYPE] == CONF_TYPE_GO2RTC:
+            return await self._get_go2rtc_rtsp(self.conf[CONF_DEVICE_ID])
+        return self.conf.get(CONF_SOURCE, ""), self.conf.get(CONF_OPTIONS, {})
 
     async def refresh_source(self) -> None:
         """Refresh the webrtc server if needed."""
-        if CONF_G2_NAME in self.conf:
+        if self.conf[CONF_TYPE] == CONF_TYPE_GO2RTC or self.conf[CONF_CREATE_GO2RTC]:
             grest = await get_server(self.hass)
             await grest.restart()
 
@@ -122,12 +146,12 @@ async def async_get_gallery(hass: HomeAssistant) -> Gallery:
     return hass.data[DOMAIN][CONF_GALLERY]
 
 
-async def async_get_streamer(hass: HomeAssistant, name: str) -> StreaMGL:
+async def async_get_streamer(hass: HomeAssistant, device_id: str) -> StreaMGL:
     """Resolve streamer for services."""
     all_streams = (await async_get_all_streams(hass)).values()
-    streamers = [s for s in all_streams if s.name == name]
+    streamers = [s for s in all_streams if s.id == device_id]
     if not streamers:
-        msg = f"Invalid streamgl {name}"
+        msg = f"Invalid streamgl {device_id}"
         raise vol.Invalid(msg)
     return streamers[0]
 
@@ -158,9 +182,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         await asyncio.wait_for(streamer.wait_for_streaming(), 30.0)
         trigger = call.data[CONF_TRIGGER]
         now = dt.as_local(dt.utcnow())
-        tnb_path = await gallery.async_create_media_path(streamer.name, trigger, now, "tnb")
+        tnb_path = await gallery.async_create_media_path(streamer.id, trigger, now, "tnb")
         await streamer.snapper.take(tnb_path, 320)
-        clip_path = await gallery.async_create_media_path(streamer.name, trigger, now, "clip")
+        clip_path = await gallery.async_create_media_path(streamer.id, trigger, now, "clip")
         await streamer.recorder.start_recording(trigger, clip_path, call.data[CONF_LOOKBACK], call.data[CONF_DURATION])
         if call.return_response:
             return {
@@ -180,9 +204,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         await asyncio.wait_for(streamer.wait_for_streaming(), 30.0)
         trigger = call.data[CONF_TRIGGER]
         now = dt.as_local(dt.utcnow())
-        tnb_path = await gallery.async_create_media_path(streamer.name, trigger, now, "tnb")
+        tnb_path = await gallery.async_create_media_path(streamer.id, trigger, now, "tnb")
         await streamer.snapper.take(tnb_path, 320)
-        snap_path = await gallery.async_create_media_path(streamer.name, trigger, now, "snap")
+        snap_path = await gallery.async_create_media_path(streamer.id, trigger, now, "snap")
         await streamer.snapper.take(snap_path)
         if call.return_response:
             return {
@@ -214,7 +238,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     stream_conf: dict[str, Any] = entry.data[CONF_STREAM]
 
     # Create the StreaMGL and IMMEDIATLY check if last setup entry, triggering Post Setup
-    hass.data[DOMAIN][CONF_STREAM][entry.entry_id] = StreaMGL(hass, entry.title, stream_conf)
+    hass.data[DOMAIN][CONF_STREAM][entry.entry_id] = StreaMGL(hass, stream_conf)
     if len(hass.config_entries.async_entries(DOMAIN, False, False)) == len(hass.data[DOMAIN][CONF_STREAM]):
         await async_post_setup(hass)
 
@@ -227,10 +251,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_post_setup(hass: HomeAssistant) -> None:
     """Post setup once all entries are setup, or on new entry."""
     all_streams = (await async_get_all_streams(hass)).values()
-    g2_streams = {f"{DOMAIN}.{st.conf[CONF_G2_NAME]}": st.conf[CONF_G2_STREAM] for st in all_streams if CONF_G2_STREAM in st.conf}
-    if g2_streams:
+    g2_owned_streams = {f"{DOMAIN}.{st.id}": src for st in all_streams if (src := await st.get_go2rtc_source()) is not None}
+    if g2_owned_streams:
         grest = await get_server(hass)
-        await grest.refresh_streams(g2_streams)
+        await grest.refresh_streams(g2_owned_streams, f"{DOMAIN}.")
 
     _LOGGER.debug(f"Starting {len(all_streams)} streamers")
     for streamer in all_streams:
@@ -239,10 +263,19 @@ async def async_post_setup(hass: HomeAssistant) -> None:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    _LOGGER.debug(f"Unloading entry {entry.unique_id}")
-    await (await async_get_all_streams(hass)).pop(entry.entry_id).async_final()
+    _LOGGER.debug(f"Unloading entry {entry.entry_id}")
+    if (stream := (await async_get_all_streams(hass)).pop(entry.entry_id, None)) is not None:
+        await stream.async_final()
     await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle removal of an entry."""
+    _LOGGER.debug(f"Removing entry {entry.entry_id}")
+    if entry.data[CONF_STREAM].get(CONF_CREATE_GO2RTC, False):
+        grest = await get_server(hass)
+        await grest.streams_del(f"{DOMAIN}.{entry.data[CONF_STREAM][CONF_DEVICE_ID]}")
 
 
 @decorators.websocket_command(
@@ -277,7 +310,7 @@ async def websocket_gallery_list(hass: HomeAssistant, connection: connection.Act
             adate = dt.utcnow()
 
         gallery = await async_get_gallery(hass)
-        medias = await gallery.async_get_medias(streamer.name, trigs, dt.as_local(adate))
+        medias = await gallery.async_get_medias(streamer.id, trigs, dt.as_local(adate))
 
     except Exception as err:
         error("unknown_exception", str(err))
@@ -314,7 +347,7 @@ async def websocket_gallery_delete(hass: HomeAssistant, connection: connection.A
             return
 
         gallery = await async_get_gallery(hass)
-        if not await gallery.async_del_media(streamer.name, msg["trigger"], adate):
+        if not await gallery.async_del_media(streamer.id, msg["trigger"], adate):
             error("no_corresponding_media", "No media corresponding to the criterias.")
             return
 

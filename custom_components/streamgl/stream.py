@@ -36,11 +36,11 @@ class _TimePacket:
 class Streamer(Updatable):
     """Handle the Stream."""
 
-    def __init__(self, hass: HomeAssistant, name: str, max_inactivity_seconds: int = 15) -> None:
+    def __init__(self, hass: HomeAssistant, device_id: str, max_inactivity_seconds: int = 15) -> None:
         Updatable.__init__(self)
         self.hass = hass
-        self.name: str = name
-        self.logger = _StreamLoggingAdapter(_LOGGER, {"name": self.name})
+        self.id: str = device_id
+        self.logger = _StreamLoggingAdapter(_LOGGER, {"name": self.id})
         self._nb_sec_no_frame: int = max_inactivity_seconds
 
         self._packet_handlers: list[PacketHandler] = []
@@ -52,14 +52,15 @@ class Streamer(Updatable):
         self._connected: bool = False
         self._streaming: bool = False
         self._exit_requested: bool = False
+        self._info: dict[str, Any] = {}
 
         self._src: str = ""
         self._src_options: dict[str, str] = {}
 
     @property
-    def streaming(self) -> bool:
-        """Get the state of the stream."""
-        return self._streaming
+    def info(self) -> tuple[bool, dict[str, Any]]:
+        """Get the state and info of the stream."""
+        return self._streaming, {**self._info, "connected": self._connected, "exiting": self._exit_requested}
 
     def _set_streaming(self, streaming: bool) -> None:
         if streaming:
@@ -146,6 +147,11 @@ class Streamer(Updatable):
                     if packet.is_keyframe:
                         first_keyframe_recvd = True
                         self.logger.debug("First keyframe received.")
+                        try:
+                            vs = self._con.streams.video[0]
+                            self._info = {"codec": vs.codec.name, "width": vs.width, "height": vs.height, "fps": str(vs.codec_context.rate)}
+                        except Exception as err:  # Best effort info extraction
+                            self.logger.debug("Info extraction failed: %s", err)
                         self._set_streaming(True)
                         asyncio.run_coroutine_threadsafe(self._async_process_packet(packet, True), loop)
                 else:
@@ -174,7 +180,8 @@ class Streamer(Updatable):
 class PacketHandler:
     """Handle Packets read from stream."""
 
-    def __init__(self) -> None:
+    def __init__(self, name: str) -> None:
+        self._name = name
         self._queue: asyncio.Queue[_TimePacket] = asyncio.Queue()
         self._process_task = asyncio.create_task(self.run())
 
@@ -196,7 +203,7 @@ class PacketHandler:
         if not self._queue.full():
             await self._queue.put(packet)
         else:
-            self.logger.warning("Queue Full, packet skipped")
+            self.logger.warning(f"{self._name} - Queue Full, packet skipped")
 
     async def run(self) -> None:
         """Process the Packets."""
@@ -206,10 +213,10 @@ class PacketHandler:
                 packet = await self._queue.get()
                 await self.process(packet)
             except asyncio.QueueShutDown:
-                self.logger.debug("Closing")
+                self.logger.debug(f"{self._name} - Closing Packet Handler")
                 processing = False
             except Exception:
-                self.logger.exception("Failed processing the packet")
+                self.logger.exception(f"{self._name} - Failed processing the packet")
 
 
 class _RecordItem:
@@ -285,7 +292,7 @@ class PacketRecorder(PacketHandler, Updatable):
     """Store Packets with a given lookback in order to be able to use them for recording."""
 
     def __init__(self, max_lookback: int = 10) -> None:
-        PacketHandler.__init__(self)
+        PacketHandler.__init__(self, "recorder")
         Updatable.__init__(self)
         self._max_lookback = max_lookback
         self._lookback_packets: list[_TimePacket] = []
@@ -299,6 +306,7 @@ class PacketRecorder(PacketHandler, Updatable):
 
     async def close(self) -> None:
         """Close the PacketRecorder."""
+        await super().close()
         for rec in self._records.values():
             await rec.stop()
         self._records.clear()
@@ -355,7 +363,7 @@ class PacketFramer(PacketHandler):
     """Decode Packets into frames and process them for children processes."""
 
     def __init__(self) -> None:
-        super().__init__()
+        PacketHandler.__init__(self, "framer")
         self._frame_handlers: list[FrameHandler] = []
         self._decoding_frames = False
         self._pkt_from_keyframe: list[_TimePacket] = []
@@ -367,6 +375,7 @@ class PacketFramer(PacketHandler):
 
     async def close(self) -> None:
         """Close the PacketFramer."""
+        await super().close()
         for fh in self._frame_handlers:
             await fh.close()
 

@@ -32,7 +32,7 @@ class _BaseStreamerSensor(SensorEntity):
     def __init__(self, streamer: StreaMGL, key: str) -> None:
         self._streamer = streamer
         self._attr_device_info: DeviceInfo = streamer.device_info
-        self._attr_unique_id: str = f"{DOMAIN}_{streamer.name}_{key}"
+        self._attr_unique_id: str = f"{DOMAIN}_{streamer.id}_{key}"
         self._attr_translation_key: str = key
         self._attr_available = True
 
@@ -56,16 +56,16 @@ class GallerySizeSensor(_BaseStreamerSensor):
     async def compute_init_size(self) -> None:
         """Compute an initial size once."""
         self._init_timestamp = (datetime.now() - timedelta(days=1)).timestamp()  # taking yesterday as ref
-        self._init_value = await self._gallery.get_stream_gallery_sizes(self._streamer.name, None, self._init_timestamp)
+        self._init_value = await self._gallery.get_stream_gallery_sizes(self._streamer.id, None, self._init_timestamp)
         self._attr_extra_state_attributes = self._init_value.copy()
         await self._update()
 
     async def _update(self) -> None:
         # Compute only additional sizes since init in order for optimization
-        new_sizes = await self._gallery.get_stream_gallery_sizes(self._streamer.name, self._init_timestamp, None)
+        new_sizes = await self._gallery.get_stream_gallery_sizes(self._streamer.id, self._init_timestamp, None)
         for trig, val in new_sizes.items():
             self._attr_extra_state_attributes[trig] = self._init_value.get(trig, 0) + val
         self._attr_native_value = sum(size for size in self._attr_extra_state_attributes.values())
-        _LOGGER.debug(f"[{self._streamer.name}] Total: {self._attr_native_value} - Triggers: {self._attr_extra_state_attributes}")
+        _LOGGER.debug(f"[{self._streamer.id}] Total: {self._attr_native_value} - Triggers: {self._attr_extra_state_attributes}")
         if self.hass is not None:
             await self.async_update_ha_state(force_refresh=True)

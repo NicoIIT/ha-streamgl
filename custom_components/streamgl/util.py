@@ -3,13 +3,17 @@
 import asyncio
 import logging
 from collections.abc import Callable, Coroutine
-from typing import Any, Literal
+from typing import Any, Literal, cast
+from urllib.parse import SplitResult, urlsplit
 
 from aiohttp import ClientError, ClientResponse, ClientTimeout
+from homeassistant.components.camera import Camera
+from homeassistant.components.camera.const import DOMAIN as CAMERA_DOMAIN
 from homeassistant.components.lovelace.const import DOMAIN as LOVELACE_DOMAIN
 from homeassistant.components.lovelace.resources import ResourceStorageCollection
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.entity_platform import DATA_DOMAIN_PLATFORM_ENTITIES
 from homeassistant.helpers.singleton import singleton
 from homeassistant.util.hass_dict import HassKey
 from yarl import URL
@@ -27,6 +31,29 @@ except ImportError:
 WEBRTC_DOMAIN = "webrtc"
 
 logging.getLogger("aiohttp").setLevel(logging.DEBUG)
+
+
+def is_webrtc_camera_installed(hass: HomeAssistant) -> bool:
+    """Check if the WebRTC Camera component is installed."""
+    return len(hass.config_entries.async_entries(WEBRTC_DOMAIN)) > 0
+
+
+def get_url_redacted(url: str) -> str:
+    """Get an url suitable for use in displays, meaning without user / password."""
+    pu = urlsplit(url, "", False)
+    netloc = f"***:***@{pu.hostname}" if pu.username or pu.password else pu.netloc
+    fragments = "***" if pu.fragment else ""
+    return SplitResult(pu.scheme, netloc, pu.path, pu.query, fragments).geturl()
+
+
+def get_cameras(hass: HomeAssistant) -> dict[str, Camera]:
+    """Get all the camera entities registered."""
+    cam_dict: dict[str, Camera] = {}
+    for (platform, _), entities in hass.data.get(DATA_DOMAIN_PLATFORM_ENTITIES, {}).items():
+        if platform == CAMERA_DOMAIN:
+            for name, camera in entities.items():
+                cam_dict[name] = cast("Camera", camera)
+    return cam_dict
 
 
 class WebRtcGo2rtcClient:
@@ -59,7 +86,7 @@ class WebRtcGo2rtcClient:
         if not skip_avail_check and self._need_avail_check:
             await self._wait_available()
         url = self._base_url.with_path(path)
-        _LOGGER.debug("%s - %s, data=%s, params=%s", method, path, data, params)
+        _LOGGER.debug("%s - %s, data=%s, params=%s", method, get_url_redacted(str(url)), data, params)
         try:
             resp = await async_get_clientsession(self.hass).request(method, url, timeout=ClientTimeout(total=10), params=params, json=data)
         except ClientError as err:
@@ -78,7 +105,7 @@ class WebRtcGo2rtcClient:
                 await self._request("GET", "api", skip_avail_check=True)
                 connected = True
             except Exception as err:
-                if connected_attempts > 10:
+                if connected_attempts > 5:
                     raise ServerMissingError("Webrtc go2rtc server not available") from err
                 _LOGGER.debug("Webrtc go2rtc server not ready, retrying")
                 await asyncio.sleep(1.0)
@@ -89,11 +116,6 @@ class WebRtcGo2rtcClient:
         """Get server info."""
         resp = await self._request("GET", "api")
         return await resp.json()
-
-    async def get_rtsp_feed(self, src: str) -> str:
-        """Get the RTSP url for a given src."""
-        info = await self.info()
-        return f"rtsp://{info['host'].split(':')[0]}{info['rtsp']['listen']}/{src}"
 
     async def restart(self) -> None:
         """Restart the daemon / reload the webrtc integration."""
@@ -106,7 +128,7 @@ class WebRtcGo2rtcClient:
             # BUT if there was a ghost one from a previously wrongly cleaned webrtc, it will just exit
             _LOGGER.debug("Trying to restart Go2Rtc server using API.")
             await self._request("POST", "api/restart", skip_avail_check=True)
-            await self._request("POST", "api")
+            await self.info()
             _LOGGER.info("Go2Rtc server restarted OK using API.")
         except Exception as err:
             _LOGGER.warning("Failed to restart Go2Rtc using api service: %s", err)
@@ -115,7 +137,7 @@ class WebRtcGo2rtcClient:
                 _LOGGER.debug("Trying to restart Go2Rtc server by WebRtc integration reload.")
                 entries = self.hass.config_entries.async_entries(WEBRTC_DOMAIN)
                 await self.hass.config_entries.async_reload(entries[0].entry_id)
-                await self._request("POST", "api")
+                await self.info()
                 _LOGGER.info("Go2Rtc server restarted OK by WebRtc integration reload.")
             except Exception as err:
                 _LOGGER.warning("Failed to restart Go2Rtc using WebRtc integration reload: %s", err)
@@ -142,7 +164,7 @@ class WebRtcGo2rtcClient:
         """Delete a stream."""
         await self._request("DELETE", "api/streams", params={"src": name})
 
-    async def refresh_streams(self, streams: dict[str, str]) -> None:
+    async def refresh_streams(self, streams: dict[str, str], delete_non_exists_startswith: str | None = None) -> None:
         """Refresh streams."""
         exist_streams = await self.streams_list()
         _LOGGER.debug(f"Existing streams: {exist_streams}")
@@ -150,6 +172,10 @@ class WebRtcGo2rtcClient:
         restart_needed = False
         for nm, st in up_streams.items():
             restart_needed |= await self.streams_add(nm, st)
+        if delete_non_exists_startswith is not None:
+            del_streams = [nm for nm in exist_streams if nm.startswith(delete_non_exists_startswith) and nm not in streams]
+            for stream in del_streams:
+                await self.streams_del(stream)
         if restart_needed:
             _LOGGER.debug(f"Reloading webrtc after updated streams via config: {up_streams}")
             await self.restart()

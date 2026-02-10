@@ -16,3 +16,6 @@ logger:
 
 streamgl:
   gallery: config/medias
+  thumbnail_width: 300
+  max_wait_for_streaming: 30
+

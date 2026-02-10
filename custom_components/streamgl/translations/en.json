@@ -16,21 +16,30 @@
                 }
             },
             "stream_options": {
-                "description": "Enter the stream parameters.",
+                "description": "Stream parameters.",
                 "data": {
-                    "device_id": "ID used as reference (unique, cannot be changed).",
+                    "device_id": "ID used as reference (unique, cannot be changed)",
                     "source": "Stream source (rtsp, ffmpeg, onvif, ...)",
-                    "options": "Ffmpeg options",
-                    "create_go2rtc": "Create a go2rtc stream (for use by WebRTC Camera)"
+                    "create_go2rtc": "Create a go2rtc stream (for use by WebRTC Camera)",
+                    "audio": "Record Audio",
+                    "max_lookback": "Maximum LookBack"
+                },
+                "sections": {
+                    "ffmpeg_options": {
+                        "name": "Advanced AV Options",
+                        "data": {
+                            "options": "Input options",
+                            "read_to": "Read Timeout",
+                            "open_to": "Open timeout",
+                            "max_retry": "Max connection attempts (0 is infinite)"
+                        }
+                    }
                 }
             },
-            "stream_sumup": {
-                "description": "Connection successfull!\n \nOne day we may display a stream or a capture here but for now here is the main stream info:\n\n    codec: {codec}\n    width: {width}\n    height: {height}\n    framerate: {fps}"
-            },
             "configure": {
-                "description": "Configure the integration",
+                "description": "Stream info:\n\n    video: {video}\n    width: {width}\n    height: {height}\n    fps: {fps}\n    audio: {audio}",
                 "menu_options": {
-                    "config_options": "Configure Options",
+                    "stream_options": "Configure Stream",
                     "config_zone": "Configure Zones",
                     "config_alert": "Configure Alerts",
                     "finalize": "Finalize"
@@ -62,7 +71,8 @@
             "exist_id": "A StreaMGL with the same ID already exists",
             "invalid_exec_echo": "'exec:' and 'echo:' cannot be used for security reasons",
             "invalid_options": "FFmpeg options for go2rtc 'ffmpeg:' stream type must be referenced directly in '#raw: ', see go2rtc doc.",
-            "stream_failed": "Unable to connect to the stream within 20 seconds, check error logs for more info."
+            "stream_failed": "Unable to connect to the stream within 20 seconds, check error logs for more info.",
+            "no_audio": "Audio recording requested but no audio available."
         }
     },
     "selector": {
@@ -136,6 +146,11 @@
         "sensor": {
             "size": {
                 "name": "Gallery Size"
+            }
+        },
+        "switch": {
+            "activation": {
+                "name": "Activation"
             }
         }
     }

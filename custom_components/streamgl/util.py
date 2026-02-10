@@ -16,12 +16,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import DATA_DOMAIN_PLATFORM_ENTITIES
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.singleton import singleton
 from homeassistant.util.hass_dict import HassKey
 from yarl import URL
 
-from .const import CONF_CREATE_GO2RTC, CONF_DEFAULT_RTSP_OPTIONS, CONF_STREAM, CONF_TYPE_GO2RTC, DOMAIN
-from .stream import PacketFramer, PacketRecorder, SnapshotHandler, Streamer
+from .const import CONF_CREATE_GO2RTC, CONF_DEFAULT_RTSP_OPTIONS, CONF_MAX_LOOKBACK, CONF_STREAM, CONF_TYPE_GO2RTC, DOMAIN
+from .stream import PacketFramer, PacketRecorder, SnapshotHandler, Streamer, StreamerOptions
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,15 +67,16 @@ def get_cameras(hass: HomeAssistant) -> dict[str, Camera]:
 class StreaMGL(Streamer):
     """Wrapper StreaMGL including Recorder, Snapper and support for go2rtc and rtsp source."""
 
-    def __init__(self, hass: HomeAssistant, conf: dict[str, Any], max_inactivity_seconds: int = 15, max_lookback: int = 10) -> None:
-        super().__init__(hass, conf[CONF_DEVICE_ID], max_inactivity_seconds)
+    def __init__(self, hass: HomeAssistant, conf: dict[str, Any]) -> None:
+        super().__init__(hass, conf[CONF_DEVICE_ID], StreamerOptions.create_from_dict(conf))
         self.conf = conf
-        self.recorder: PacketRecorder = PacketRecorder(max_lookback)
+        self.recorder: PacketRecorder = PacketRecorder(conf.get(CONF_MAX_LOOKBACK, 10))
         self.add_packet_handler(self.recorder)
         self.framer: PacketFramer = PacketFramer()
         self.add_packet_handler(self.framer)
         self.snapper: SnapshotHandler = SnapshotHandler()
         self.framer.add_frame_handler(self.snapper)
+        self.register_done = False
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -130,6 +132,20 @@ async def async_get_streamer(hass: HomeAssistant, device_id: str) -> StreaMGL:
         msg = f"Invalid streamgl {device_id}"
         raise vol.Invalid(msg)
     return streamers[0]
+
+
+class BaseStreamerEntity(RestoreEntity):
+    """Base Entity for a StreaMGL."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_available = True
+
+    def __init__(self, streamer: StreaMGL, key: str) -> None:
+        self._streamer = streamer
+        self._attr_device_info: DeviceInfo = streamer.device_info
+        self._attr_unique_id: str = f"{DOMAIN}_{streamer.id}_{key}"
+        self._attr_translation_key: str = key
 
 
 class UseNotAvailableWebrtcError(Exception):

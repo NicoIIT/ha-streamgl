@@ -17,6 +17,8 @@ class StreaMGLGalleryCard extends LitElement {
             view_mode: {},
             update_sensor: {},
             gallery_last_update: {},
+            prev_selected_time: {},
+            scroll_on_next_update: {},
         };
     }
 
@@ -189,6 +191,10 @@ class StreaMGLGalleryCard extends LitElement {
         arr.forEach((v) => {
             this.imageObserver.observe(v);
         })
+        if (this.scroll_on_next_update != undefined) {
+            this._scrollToIndex(this.scroll_on_next_update, "instant")
+            this.scroll_on_next_update = undefined
+        }
     }
 
     setConfig(config) {
@@ -244,7 +250,10 @@ class StreaMGLGalleryCard extends LitElement {
             this._loadResources();
         }
         else if (this.gallery_last_update !== new_last_update) {
-            this._loadResources();
+            let today = new Date()
+            if (this.date_input.getDate() == today.getDate() && this.date_input.getMonth() == today.getMonth() && this.date_input.getFullYear() == today.getFullYear()) {
+                this._loadResources(true);
+            }
         }
         this.gallery_last_update = new_last_update
     }
@@ -299,14 +308,19 @@ class StreaMGLGalleryCard extends LitElement {
         }
     }
 
+    _scrollToIndex(idx, behavior = "instant") {
+        var elt = this.shadowRoot.getElementById("resource" + idx);
+        if (elt) {
+            elt.scrollIntoView({ behavior: behavior, block: "nearest", inline: "nearest" });
+        }
+    }
+
     _selectResource(idx) {
         if (this.currentResourceIndex === idx) {
             this.currentResourceIndex = undefined
         } else {
             this.currentResourceIndex = idx;
-            var elt = this.shadowRoot.querySelector("#resource" + this.currentResourceIndex);
-            if (elt)
-                elt.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+            this._scrollToIndex(idx, "smooth")
             this.view_mode = ('clip' in this._currentResource().urls) ? 'clip' : 'snap';
         }
     }
@@ -352,7 +366,13 @@ class StreaMGLGalleryCard extends LitElement {
                 trigger: res.trigger,
                 date: res.date,
             }).then(result => {
-                this._loadResources();
+                this.resources.splice(this.currentResourceIndex, 1);
+                if (this.resources.length == 0) {
+                    this.currentResourceIndex = undefined
+                } else if (this.currentResourceIndex >= this.resources.length) {
+                    this._selectResource(this.currentResourceIndex - 1);
+                }
+                this.requestUpdate()
             }, reject => {
                 alert('Deletion failed, check Home Assistant logs')
             });
@@ -375,9 +395,13 @@ class StreaMGLGalleryCard extends LitElement {
         this._loadResources();
     }
 
-    _loadResources() {
-        this.resources = [];
+    _loadResources(preserve_current = false) {
+        let prev_selected_time = undefined
+        if (this.currentResourceIndex != undefined && preserve_current) {
+            prev_selected_time = this._currentResource().time
+        }
         this.currentResourceIndex = undefined;
+        this.resources = [];
         this.res_msg = "Loading...";
         this.requestUpdate();
 
@@ -387,8 +411,17 @@ class StreaMGLGalleryCard extends LitElement {
             date: this.date_input.toISOString(),
             triggers: (this.config.triggers === undefined) ? [] : this.config.triggers
         }).then(result => {
-            this.resources = (this.config.reversed !== undefined && this.config.reversed) ? [...result].reverse() : result
-            this.res_msg = (this.resources.length == 0) ? "No Media" : "";
+            let rev = (this.config.reversed !== undefined && this.config.reversed)
+            this.resources = rev ? [...result].reverse() : result
+            if (this.resources.length > 0) {
+                if (prev_selected_time != undefined) {
+                    this.currentResourceIndex = this.resources.findIndex(item => item.time === prev_selected_time);
+                }
+                this.res_msg = ""
+            } else {
+                this.res_msg = "No Media"
+            }
+            this.scroll_on_next_update = this.currentResourceIndex == undefined ? (rev ? 0 : Math.max(this.resources.length - 1)) : this.currentResourceIndex
             this.requestUpdate();
         }, reject => {
             this.res_msg = reject;

@@ -36,6 +36,8 @@ CONF_STREAMGL: Final = "streamgl"
 CONF_TRIGGER: Final = "trigger"
 CONF_DURATION: Final = "duration"
 CONF_LOOKBACK: Final = "lookback"
+CONF_TNB_WIDTH: Final = "thumbnail_width"
+CONF_MAX_WAIT: Final = "max_wait_for_streaming"
 
 VALID_GALLERY = cv.matches_regex(r"^[\da-zA-Z_/]*$")
 VALID_STREAM_NAME = cv.matches_regex(CONF_STREAM_NAME_REGEX)
@@ -48,6 +50,8 @@ CONFIG_SCHEMA = vol.Schema(
         DOMAIN: vol.Schema(
             {
                 vol.Optional(CONF_GALLERY, default=DEFAULT_GALLERY_PATH): VALID_GALLERY,
+                vol.Optional(CONF_TNB_WIDTH, default=320): cv.positive_int,
+                vol.Optional(CONF_MAX_WAIT, default=30): cv.positive_int,
             }
         )
     },
@@ -96,14 +100,28 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     except Exception as err:
         _LOGGER.warning("Failed to setup Custom Galery Card.", exc_info=err, stack_info=True)
 
+    # service global options
+    tnb_width = dom_data[CONF_OPTIONS].get(CONF_TNB_WIDTH, 320)
+    max_wait = dom_data[CONF_OPTIONS].get(CONF_MAX_WAIT, 30)
+
+    # Check if a stream is activated and streaming
+    async def get_valid_streamer(stream_id: str) -> StreaMGL:
+        streamer = await async_get_streamer(hass, stream_id)
+        if not streamer.activated:
+            raise vol.Invalid("The streamer is not activated")
+        try:
+            await asyncio.wait_for(streamer.wait_for_streaming_start(), max_wait)
+        except TimeoutError as err:
+            raise vol.Invalid("The streamer is not streaming") from err
+        return streamer
+
     # streamgl start record / stop record / snapshot services
     async def start_recording(call: ServiceCall) -> ServiceResponse | None:
-        streamer = await async_get_streamer(hass, call.data[CONF_STREAMGL])
-        await asyncio.wait_for(streamer.wait_for_streaming(), 30.0)
+        streamer = await get_valid_streamer(call.data[CONF_STREAMGL])
         trigger = call.data[CONF_TRIGGER]
         now = dt.as_local(dt.utcnow())
         tnb_path = await gallery.async_create_media_path(streamer.id, trigger, now, "tnb")
-        await streamer.snapper.take(tnb_path, 320)
+        await streamer.snapper.take(tnb_path, tnb_width)
         clip_path = await gallery.async_create_media_path(streamer.id, trigger, now, "clip")
         await streamer.recorder.start_recording(trigger, clip_path, call.data[CONF_LOOKBACK], call.data[CONF_DURATION])
         if call.return_response:
@@ -116,16 +134,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         return None
 
     async def stop_recording(call: ServiceCall) -> None:
-        streamer = await async_get_streamer(hass, call.data[CONF_STREAMGL])
+        streamer = await get_valid_streamer(call.data[CONF_STREAMGL])
         await streamer.recorder.stop_recording(call.data[CONF_TRIGGER])
 
     async def snapshot(call: ServiceCall) -> ServiceResponse | None:
-        streamer = await async_get_streamer(hass, call.data[CONF_STREAMGL])
-        await asyncio.wait_for(streamer.wait_for_streaming(), 30.0)
+        streamer = await get_valid_streamer(call.data[CONF_STREAMGL])
         trigger = call.data[CONF_TRIGGER]
         now = dt.as_local(dt.utcnow())
         tnb_path = await gallery.async_create_media_path(streamer.id, trigger, now, "tnb")
-        await streamer.snapper.take(tnb_path, 320)
+        await streamer.snapper.take(tnb_path, tnb_width)
         snap_path = await gallery.async_create_media_path(streamer.id, trigger, now, "snap")
         await streamer.snapper.take(snap_path)
         if call.return_response:
@@ -146,6 +163,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         all_streams = (await async_get_all_streams(hass)).values()
         _LOGGER.debug(f"Stopping {len(all_streams)} streamers")
         for streamer in all_streams:
+            streamer.reset_updatable()
             await streamer.async_final()
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_stop)
@@ -162,31 +180,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if len(hass.config_entries.async_entries(DOMAIN, False, False)) == len(hass.data[DOMAIN][CONF_STREAM]):
         await async_post_setup(hass)
 
-    # initialize entities
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     return True
 
 
 async def async_post_setup(hass: HomeAssistant) -> None:
     """Post setup once all entries are setup, or on new entry."""
-    all_streams = (await async_get_all_streams(hass)).values()
-    g2_owned_streams = {f"{DOMAIN}.{st.id}": src for st in all_streams if (src := await st.get_go2rtc_source()) is not None}
+    all_streams = await async_get_all_streams(hass)
+    g2_owned_streams = {f"{DOMAIN}.{st.id}": src for st in all_streams.values() if (src := await st.get_go2rtc_source()) is not None}
     if g2_owned_streams:
         grest = await get_server(hass)
         await grest.refresh_streams(g2_owned_streams, f"{DOMAIN}.")
 
     _LOGGER.debug(f"Starting {len(all_streams)} streamers")
-    for streamer in all_streams:
-        await streamer.async_init()
+    for entry_id, streamer in all_streams.items():
+        if (entry := hass.config_entries.async_get_entry(entry_id)) is not None and not streamer.register_done:
+            await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+            streamer.register_done = True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.debug(f"Unloading entry {entry.entry_id}")
     if (stream := (await async_get_all_streams(hass)).pop(entry.entry_id, None)) is not None:
+        await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        stream.reset_updatable()
         await stream.async_final()
-    await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     return True
 
 

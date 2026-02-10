@@ -1,19 +1,14 @@
 """Sensor for StreaMGL."""
 
-import logging
 from datetime import datetime, timedelta
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
 from .gallery import Gallery, async_get_gallery
-from .util import StreaMGL, async_get_all_streams
-
-_LOGGER = logging.getLogger(__name__)
+from .util import BaseStreamerEntity, StreaMGL, async_get_all_streams
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
@@ -26,18 +21,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async_add_entities(entities, True)
 
 
-class _BaseStreamerSensor(SensorEntity):
-    _attr_has_entity_name = True
-
-    def __init__(self, streamer: StreaMGL, key: str) -> None:
-        self._streamer = streamer
-        self._attr_device_info: DeviceInfo = streamer.device_info
-        self._attr_unique_id: str = f"{DOMAIN}_{streamer.id}_{key}"
-        self._attr_translation_key: str = key
-        self._attr_available = True
-
-
-class GallerySizeSensor(_BaseStreamerSensor):
+class GallerySizeSensor(BaseStreamerEntity, SensorEntity):
     """Sensor tracking the size of the stream gallery."""
 
     _attr_device_class = SensorDeviceClass.DATA_SIZE
@@ -66,6 +50,6 @@ class GallerySizeSensor(_BaseStreamerSensor):
         for trig, val in new_sizes.items():
             self._attr_extra_state_attributes[trig] = self._init_value.get(trig, 0) + val
         self._attr_native_value = sum(size for size in self._attr_extra_state_attributes.values())
-        _LOGGER.debug(f"[{self._streamer.id}] Total: {self._attr_native_value} - Triggers: {self._attr_extra_state_attributes}")
+        self._streamer.logger.debug(f"Total: {self._attr_native_value} - Triggers: {self._attr_extra_state_attributes}")
         if self.hass is not None:
             await self.async_update_ha_state(force_refresh=True)

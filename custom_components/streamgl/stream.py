@@ -96,7 +96,6 @@ class Streamer(Updatable):
         self._deactivation_event: asyncio.Event = asyncio.Event()
         self._deactivation_event.set()  # deactivated by default. Activation by async_init()
 
-        self._streaming: bool = False
         self._info: dict[str, Any] = {}
         self._act_lock: asyncio.Lock = asyncio.Lock()
 
@@ -111,22 +110,12 @@ class Streamer(Updatable):
     @property
     def streaming(self) -> bool:
         """Get to know if the stream is streaming."""
-        return self._streaming
+        return self._start_streaming_event.is_set()
 
     @property
     def info(self) -> dict[str, Any]:
         """Get the info of the stream."""
         return self._info
-
-    async def _set_streaming(self, streaming: bool) -> None:
-        if streaming:
-            self._start_streaming_event.set()
-        else:
-            self._start_streaming_event.clear()
-        if streaming != self._streaming:
-            self.logger.info(f"{'Streaming started' if streaming else 'Streaming stopped'}")
-        self._streaming = streaming
-        await self.update()
 
     def add_packet_handler(self, ph) -> None:  # noqa: ANN001
         """Register a Packet handler."""
@@ -176,7 +165,6 @@ class Streamer(Updatable):
                 await asyncio.wait([wait_deactivation, read_task], return_when=asyncio.FIRST_COMPLETED)
                 self._start_streaming_event.clear()
                 self.logger.info("Streaming stopped")
-                self._streaming = False
                 await self.update()
             else:
                 # Not connected, wait for either (5 * nb_retry) seconds (max 5min) or a deactivation
@@ -232,7 +220,7 @@ class Streamer(Updatable):
 
     def _read(self, loop: asyncio.AbstractEventLoop) -> None:
         self.logger.debug("Read started")
-        first_keyframe_recvd = False
+        first_video_keyframe_recvd = False
         try:
             if self._con is None:
                 self.logger.error("Trying to read not initialized container")
@@ -240,9 +228,9 @@ class Streamer(Updatable):
             for packet in self._con.demux():
                 if packet.dts is None:
                     continue
-                if not first_keyframe_recvd:
+                if not first_video_keyframe_recvd:
                     if packet.is_keyframe and packet.stream.type == "video":
-                        first_keyframe_recvd = True
+                        first_video_keyframe_recvd = True
                         self.logger.debug("First Video keyframe received.")
                         self._build_info()
                         asyncio.run_coroutine_threadsafe(self._async_process_packet(packet, True), loop)
@@ -256,15 +244,14 @@ class Streamer(Updatable):
         except Exception:
             self.logger.exception("Exception reading packet")
 
-    async def _async_process_packet(self, packet: av.Packet, is_first_key_frame: bool) -> None:
+    async def _async_process_packet(self, packet: av.Packet, is_first_video_key_frame: bool) -> None:
         # Process a Packet
-        if is_first_key_frame:
+        if is_first_video_key_frame:
             self._start_streaming_event.set()
             self.logger.info("Streaming started")
-            self._streaming = True
             await self.update()
         for ph in self._packet_handlers:
-            await ph.enqueue(_TimePacket(datetime.datetime.now(), packet, is_first_key_frame))
+            await ph.enqueue(_TimePacket(datetime.datetime.now(), packet, is_first_video_key_frame))
 
     async def flush_video_stream_context(self) -> None:
         """Flush the video context. Needed in case of frame decoding started, then stopped and started again."""
@@ -295,6 +282,10 @@ class PacketHandler:
 
     async def enqueue(self, packet: _TimePacket) -> None:
         """Enqueue a packet to be processed."""
+        if packet.is_first_video_keyframe:
+            # empty the queue in case of reset
+            while not self._queue.empty():
+                self._queue.get_nowait()
         if not self._queue.full():
             await self._queue.put(packet)
         else:
@@ -372,7 +363,6 @@ class _OutputStream:
 class _RecordItem:
     def __init__(self, path: Path) -> None:
         self._path: Path = path
-        self._ongoing: bool = False
         self._output: av.container.OutputContainer | None = None
         self._out_v_stream: _OutputStream = _OutputStream()
         self._realign_next_audio: bool = False
@@ -380,24 +370,20 @@ class _RecordItem:
         self._packets: list[_TimePacket] = []
         self._nb_encoded_pkt: int = 0
 
-    async def start(self, packets: list[_TimePacket], v_stream: av.VideoStream, a_stream: av.AudioStream | None) -> None:
+    async def start(self, v_stream: av.VideoStream, a_stream: av.AudioStream | None) -> None:
         """Effective start of the recording executor."""
-        self._ongoing = True
-        await asyncio.get_running_loop().run_in_executor(None, self._open, packets, v_stream, a_stream)
+        await asyncio.get_running_loop().run_in_executor(None, self._open, v_stream, a_stream)
 
     async def stop(self) -> None:
         """Stop the recording."""
-        if self._ongoing:
-            self._ongoing = False
-            await asyncio.get_running_loop().run_in_executor(None, self._finish, self._packets)
+        await asyncio.get_running_loop().run_in_executor(None, self._finish, self._packets)
 
-    def _open(self, packets: list[_TimePacket], v_stream: av.VideoStream, a_stream: av.AudioStream | None) -> None:
+    def _open(self, v_stream: av.VideoStream, a_stream: av.AudioStream | None) -> None:
         Path.mkdir(Path(self._path).parent, parents=True, exist_ok=True)
         self._output = av.open(self._path, "w")
         self._out_v_stream.set_stream(self._output, v_stream)
         if a_stream is not None:
             self._out_a_stream.set_stream(self._output, a_stream)
-        self._write_packets(packets)
 
     def _write_packets(self, packets: list[_TimePacket]) -> None:
         if self._output is None:
@@ -419,8 +405,6 @@ class _RecordItem:
 
     async def add_packet(self, packet: _TimePacket) -> None:
         """Add a packet."""
-        if not self._ongoing:
-            return
         if packet.pkt.is_keyframe and packet.pkt.stream.type == "video" and self._packets:
             packets = self._packets.copy()
             self._packets = [packet]
@@ -444,6 +428,9 @@ class PacketRecorder(PacketHandler, Updatable):
         self._records: dict[str, _RecordItem] = {}
         self._max_clbk: dict[str, CALLBACK_TYPE] = {}
 
+        # Lock for access to _lookback_packets / _records / _max_clbk
+        self._global_lock: asyncio.Lock = asyncio.Lock()
+
     @property
     def triggers(self) -> list[str]:
         """Access the on going record triggers."""
@@ -452,9 +439,10 @@ class PacketRecorder(PacketHandler, Updatable):
     async def close(self) -> None:
         """Close the PacketRecorder."""
         await super().close()
-        for rec in self._records.values():
-            await rec.stop()
-        self._records.clear()
+        async with self._global_lock:
+            for rec in self._records.values():
+                await rec.stop()
+            self._records.clear()
 
     def _get_lookback_packets(self, lookback: int) -> list[_TimePacket]:
         """Get the lookback packets before 'lookback' seconds and starting with a video keyframe."""
@@ -467,16 +455,17 @@ class PacketRecorder(PacketHandler, Updatable):
 
     async def process(self, packet: _TimePacket) -> None:
         """Process the packet."""
-        # Cleanup
-        if packet.is_first_video_keyframe:
-            self._lookback_packets.clear()
-        else:
-            self._lookback_packets = self._get_lookback_packets(self._max_lookback)
+        async with self._global_lock:
+            # Cleanup
+            if packet.is_first_video_keyframe:
+                self._lookback_packets.clear()
+            else:
+                self._lookback_packets = self._get_lookback_packets(self._max_lookback)
 
-        # Process packet
-        self._lookback_packets.append(packet)
-        for rec in self._records.values():
-            await rec.add_packet(packet)
+            # Process packet
+            self._lookback_packets.append(packet)
+            for rec in self._records.values():
+                await rec.add_packet(packet)
 
     async def start_recording(self, trigger: str, path: Path, lookback: int = 2, max_duration: int = 360) -> None:
         """Start recording."""
@@ -489,22 +478,29 @@ class PacketRecorder(PacketHandler, Updatable):
         v_stream, a_stream = self.parent.get_streams()
         if v_stream is None:
             raise NoVideoStreamError
-        await rec.start(self._get_lookback_packets(lookback), v_stream, a_stream)
+        await rec.start(v_stream, a_stream)
 
         async def stop_rec(_tm: datetime.datetime) -> None:
             await self.stop_recording(trigger)
 
-        self._max_clbk[trigger] = async_call_later(self.hass, max_duration, stop_rec)
-        self._records[trigger] = rec
+        async with self._global_lock:
+            for packet in self._get_lookback_packets(lookback):
+                await rec.add_packet(packet)
+            self._max_clbk[trigger] = async_call_later(self.hass, max_duration, stop_rec)
+            self._records[trigger] = rec
         await self.update()
 
     async def stop_recording(self, trigger: str) -> None:
         """Stop recording."""
-        if trigger in self._records:
-            self.logger.debug(f"Stop Recording: '{trigger}'")
-            self._max_clbk.pop(trigger)
-            await self._records.pop(trigger).stop()
+        rec: _RecordItem | None = None
+        async with self._global_lock:
+            if trigger in self._records:
+                self.logger.debug(f"Stop Recording: '{trigger}'")
+                self._max_clbk.pop(trigger)
+                rec = self._records.pop(trigger)
             await self.update()
+        if rec is not None:
+            await rec.stop()
 
 
 class PacketFramer(PacketHandler):
